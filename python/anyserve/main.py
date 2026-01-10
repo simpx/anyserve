@@ -1,6 +1,7 @@
 import anyserve
 from anyserve import Any
 import os
+import time
 
 # Data class
 class MyBigData:
@@ -24,6 +25,9 @@ def step1(data: Any[MyBigData]):
 def main():
     # 1. Init
     anyserve.init(root_dir="./tmp_anyserve")
+    
+    # Give the gRPC server a moment to spin up (though it should be instant)
+    time.sleep(0.5)
 
     # 2. Create Object
     obj = Any(MyBigData(size=100000))

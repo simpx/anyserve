@@ -34,3 +34,7 @@ dmypy.json
 htmlcov/
 coverage.xml
 tmp_anyserve/
+
+# Logs and temp
+*.log
+tmp_distributed/

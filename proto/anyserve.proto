@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+package anyserve;
+
+service AgentService {
+  rpc GetObject (GetObjectRequest) returns (GetObjectResponse);
+}
+
+message GetObjectRequest {
+  string uuid = 1;
+}
+
+message GetObjectResponse {
+  bytes data = 1;
+  bool found = 2;
+}
