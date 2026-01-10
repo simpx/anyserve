@@ -115,6 +115,28 @@ tier 的具体含义（多少 GPU、单机/多机）不要求暴露给调度器�
 
 ---
 
+### 2.4 关键子系统 (Key Subsystems)
+
+anyserve 的内部架构由以下四个核心子系统紧密协作组成：
+
+1.  **Control Plane (Rust Runtime)**
+    - **角色**: 副本的大脑与神经中枢，由 Rust 实现的高性能异步运行时。
+    - **职责**: 提供高性能的 gRPC/HTTP **Ingress**；管理请求生命周期（排队、背压、并发控制）；执行 **Capability Dispatch**，将请求分发至具体的 Python Worker；处理 **Delegation** 逻辑（能力升级与重路由）。
+
+2.  **Execution Plane (Python Workers)**
+    - **角色**: 具体的计算执行者，提供类似 FastAPI 的开发者体验。
+    - **职责**: 承载用户定义的 Capability Handler 和推理引擎（如 vLLM, SGLang）。运行在独立的 Python 进程中，通过 IPC 与 Control Plane 通信，确保计算任务的隔离性与引擎的稳定性。
+
+3.  **Local Resource Coordinator (现场资源协调器)**
+    - **角色**: 本地资源的动态管理者。
+    - **职责**: 在不重新申请集群资源的前提下，对本地 Replica 进行 **In-place Reshape**。这包括动态启动/停止 Worker 进程、利用推理引擎特性（如 vLLM Sleep Mode）进行快速上下文切换，以满足当前请求所需的 Capability。
+
+4.  **Object Plane (Transient Data Transport)**
+    - **角色**: 轻量级的大对象传输层。
+    - **职责**: 类似 Ray Object Store 但更轻量。专注于 **Copy-Semantics** 和 **TTL-driven** 的生命周期管理。支持本地 Zero-copy (mmap) 和跨机高效传输，用于在不同 Capability 步骤或 Delegation 过程中传递 Tensor 等富数据。
+
+---
+
 ## 3. 核心抽象
 
 ### 3.1 Capability（能力）
