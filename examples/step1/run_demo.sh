@@ -35,10 +35,16 @@ export PYTHONPATH="$PROJECT_DIR"
 export ANYSERVE_DATA_DIR="$DATA_DIR"
 export PYTHON_PATH="$(which python)"
 
+echo "DEBUG: PYTHON_PATH is '$PYTHON_PATH'"
+if [ -z "$PYTHON_PATH" ]; then
+    echo "ERROR: PYTHON_PATH is empty. 'which python' failed."
+    exit 1
+fi
+
 # Start Scheduler
 echo ""
 echo "=== Starting Scheduler (port $SCHEDULER_PORT) ==="
-~/.local/bin/uv run python -c "from anyserve_scheduler import run; run(port=$SCHEDULER_PORT)" &
+uv run python -c "from anyserve_scheduler import run; run(port=$SCHEDULER_PORT)" &
 SCHEDULER_PID=$!
 sleep 2
 echo "Scheduler started (PID: $SCHEDULER_PID)"
@@ -62,7 +68,7 @@ echo "Node B started (PID: $NODE_B_PID)"
 # Generate gRPC stubs
 echo ""
 echo "=== Generating gRPC stubs ==="
-~/.local/bin/uv run python -m grpc_tools.protoc \
+uv run python -m grpc_tools.protoc \
     -I"$PROJECT_DIR/proto" \
     --python_out="$PROJECT_DIR/examples/step1" \
     --grpc_python_out="$PROJECT_DIR/examples/step1" \
@@ -72,7 +78,7 @@ echo "gRPC stubs generated"
 # Run client tests
 echo ""
 echo "=== Running Client Tests ==="
-~/.local/bin/uv run python "$PROJECT_DIR/examples/step1/client.py"
+uv run python "$PROJECT_DIR/examples/step1/client.py"
 
 # Cleanup
 echo ""
