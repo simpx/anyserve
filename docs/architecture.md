@@ -70,7 +70,9 @@ anyserve 位于三层架构的中间层：
 - TP/EP/PP 等并行策略
 - 引擎细节（vLLM/sglang/自定义逻辑）
 
-> 在调度器眼里：replica 不是“万能”的。它只提供自己注册过的 capability 集合。
+> 在调度器眼里：
+- replica 不是“万能”的。它只提供自己注册过的 capability 集合。
+- 当找不到特定capability可用的replica 时，调度器也会发请求到自认为合适的replica，由replica来委托请求
 
 ---
 
