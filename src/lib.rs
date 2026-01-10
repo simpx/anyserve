@@ -9,8 +9,9 @@ pub mod pb {
     tonic::include_proto!("anyserve");
 }
 
+use pb::agent_service_client::AgentServiceClient;
 use pb::agent_service_server::{AgentService, AgentServiceServer};
-use pb::{GetObjectRequest, GetObjectResponse};
+use pb::{GetObjectRequest, GetObjectResponse, CallRequest, CallResponse};
 
 // --- gRPC Service Implementation ---
 
@@ -18,6 +19,7 @@ use pb::{GetObjectRequest, GetObjectResponse};
 struct AgentServiceImpl {
     root_dir: PathBuf,
     instance_id: String,
+    dispatcher: Py<PyAny>,
 }
 
 #[tonic::async_trait]
@@ -47,6 +49,39 @@ impl AgentService for AgentServiceImpl {
             }))
         }
     }
+
+    async fn call(
+        &self,
+        request: Request<CallRequest>,
+    ) -> Result<Response<CallResponse>, Status> {
+        let req = request.into_inner();
+
+        let result: Result<Vec<u8>, String> = Python::with_gil(|py| {
+            let py_bytes = pyo3::types::PyBytes::new(py, &req.args_pickle);
+            
+            // Expected Dispatcher python method: dispatch(service_name, args_pickle_bytes) -> result_pickle_bytes
+            let result_obj = self.dispatcher.call_method1(py, "dispatch", (req.service_name, py_bytes))
+                .map_err(|e: PyErr| e.to_string())?;
+            
+            let res_bytes = result_obj.extract::<Vec<u8>>(py)
+                 .map_err(|e: PyErr| format!("Return value must be bytes. Error: {}", e))?;
+                 
+            Ok(res_bytes)
+        });
+
+        match result {
+            Ok(data) => Ok(Response::new(CallResponse {
+                result_pickle: data,
+                success: true,
+                error: "".to_string(),
+            })),
+            Err(e) => Ok(Response::new(CallResponse {
+                result_pickle: vec![],
+                success: false,
+                error: e,
+            })),
+        }
+    }
 }
 
 // --- Python Integration ---
@@ -56,13 +91,13 @@ struct AnyserveCore {
     root_dir: PathBuf,
     instance_id: String,
     port: u16,
-    http_port: u16,
+    dispatcher: Py<PyAny>,
 }
 
 #[pymethods]
 impl AnyserveCore {
     #[new]
-    fn new(root_dir: String, instance_id: String, port: u16, http_port: u16) -> PyResult<Self> {
+    fn new(root_dir: String, instance_id: String, port: u16, dispatcher: Py<PyAny>) -> PyResult<Self> {
         let root = PathBuf::from(&root_dir);
         let instance_path = root.join("instances").join(&instance_id).join("objects");
         let names_path = root.join("names");
@@ -74,7 +109,7 @@ impl AnyserveCore {
             root_dir: root.clone(),
             instance_id: instance_id.clone(),
             port,
-            http_port,
+            dispatcher,
         };
 
         // Start gRPC server in background
@@ -84,7 +119,6 @@ impl AnyserveCore {
     }
 
     fn put_object(&self, data: Vec<u8>) -> PyResult<String> {
-        // Same as before: Local Write
         let id = Uuid::new_v4();
         let path = self
             .root_dir
@@ -100,40 +134,73 @@ impl AnyserveCore {
     }
 
     fn get_object_network(&self, object_id: String, owner_address: String) -> PyResult<Vec<u8>> {
-        // Network Read via gRPC
-        // Note: owner_address should be "ip:port"
-        
-        // Handle "localhost" case for PoC: if address has no port, assume logic or error?
-        // Let's assume owner_address is "127.0.0.1:port"
+        // Run in a separate thread to avoid "Runtime within Runtime" panic if called from within a Tokio server callback
+        let thread_handle = std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                // Must add http:// scheme for tonic
+                let endpoint = format!("http://{}", owner_address);
+                let mut client = AgentServiceClient::connect(endpoint)
+                    .await
+                    .map_err(|e| e.to_string())?;
 
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            // Must add http:// scheme for tonic
-            let endpoint = format!("http://{}", owner_address);
-            let mut client = pb::agent_service_client::AgentServiceClient::connect(endpoint)
-                .await
-                .map_err(|e| pyo3::exceptions::PyConnectionError::new_err(e.to_string()))?;
+                let request = tonic::Request::new(GetObjectRequest { uuid: object_id });
+                let response = client.get_object(request).await
+                    .map_err(|e| e.to_string())?;
+                
+                let resp_inner = response.into_inner();
+                if resp_inner.found {
+                    Ok(resp_inner.data)
+                } else {
+                    Err("Object not found on remote".to_string())
+                }
+            })
+        });
 
-            let request = tonic::Request::new(GetObjectRequest { uuid: object_id });
-            let response = client.get_object(request).await
-                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
-            
-            let resp_inner = response.into_inner();
-            if resp_inner.found {
-                Ok(resp_inner.data)
-            } else {
-                Err(pyo3::exceptions::PyKeyError::new_err("Object not found on remote"))
-            }
-        })
+        match thread_handle.join().unwrap() {
+            Ok(data) => Ok(data),
+            Err(e) => Err(pyo3::exceptions::PyRuntimeError::new_err(e)),
+        }
+    }
+
+    fn remote_call(&self, target_address: String, service_name: String, args_pickle: Vec<u8>) -> PyResult<Vec<u8>> {
+        let thread_handle = std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let endpoint = format!("http://{}", target_address);
+                let mut client = AgentServiceClient::connect(endpoint)
+                    .await
+                    .map_err(|e| e.to_string())?;
+
+                let request = tonic::Request::new(CallRequest { 
+                    service_name, 
+                    args_pickle 
+                });
+                let response = client.call(request).await
+                    .map_err(|e| e.to_string())?;
+                
+                let resp = response.into_inner();
+                if resp.success {
+                    Ok(resp.result_pickle)
+                } else {
+                    Err(format!("Remote call failed: {}", resp.error))
+                }
+            })
+        });
+
+        match thread_handle.join().unwrap() {
+            Ok(data) => Ok(data),
+            Err(e) => Err(pyo3::exceptions::PyRuntimeError::new_err(e)),
+        }
     }
 
     fn register_service(&self, service_name: String) -> PyResult<()> {
         let service_dir = self.root_dir.join("names").join(&service_name);
         fs::create_dir_all(&service_dir)?;
         
+        // Register data plane port as control plane port too (Unified)
         let instance_file = service_dir.join(&self.instance_id);
-        // Use HTTP port for Service Registry (Control Plane)
-        let address = format!("127.0.0.1:{}", self.http_port);
+        let address = format!("127.0.0.1:{}", self.port);
         let mut file = fs::File::create(instance_file)?;
         file.write_all(address.as_bytes())?;
         
@@ -141,7 +208,6 @@ impl AnyserveCore {
     }
 
     fn lookup_service(&self, service_name: String) -> PyResult<Vec<String>> {
-        // Returns list of addresses
         let service_dir = self.root_dir.join("names").join(&service_name);
         let mut instances = Vec::new();
 
@@ -150,7 +216,6 @@ impl AnyserveCore {
                 let entry = entry?;
                 let file_name = entry.file_name();
                 if let Some(_name) = file_name.to_str() {
-                    // Read content for address
                     let addr = fs::read_to_string(entry.path()).unwrap_or_default();
                     instances.push(addr);
                 }
@@ -173,6 +238,8 @@ impl AnyserveCore {
         let addr_str = format!("0.0.0.0:{}", self.port);
         let root = self.root_dir.clone();
         let iid = self.instance_id.clone();
+        // Clone dispatcher with GIL so we can move the clone into the thread
+        let dispatcher = Python::with_gil(|py| self.dispatcher.clone_ref(py));
         
         std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().unwrap();
@@ -181,6 +248,7 @@ impl AnyserveCore {
                 let service = AgentServiceImpl {
                     root_dir: root,
                     instance_id: iid,
+                    dispatcher,
                 };
                 
                 println!("[Rust] gRPC Server listening on {}", addr);

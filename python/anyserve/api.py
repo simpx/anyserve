@@ -1,16 +1,34 @@
 import random
 import functools
 import pickle
-import base64
-import urllib.request
-import json
 from typing import Callable, Any as PyAny
 from anyserve.core import get_core, init as core_init
 from anyserve.objects import Any
-import anyserve.http_server as http_server
 
 # Global registry for local function implementations
 _local_services = {}
+
+class Dispatcher:
+    def dispatch(self, service_name: str, args_pickle: bytes) -> bytes:
+        if service_name not in _local_services:
+            raise ValueError(f"Service {service_name} not found locally")
+        
+        func = _local_services[service_name]
+        try:
+            # Deserialize
+            args = pickle.loads(args_pickle)
+            if not isinstance(args, (list, tuple)):
+                args = (args,)
+            
+            # Execute
+            result = func(*args)
+            
+            # Serialize
+            return pickle.dumps(result)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            raise RuntimeError(f"Execution failed: {str(e)}")
 
 def service(name: str):
     """
@@ -30,41 +48,10 @@ def _register_all_local_services():
 
 # Wrap core_init to also register services and start HTTP server
 def init(root_dir: str = "./tmp_anyserve", instance_id: str = None, port: int = 0):
-    core, http_port = core_init(root_dir, instance_id, port)
-    
-    # Start Control Plane
-    http_server.start_background_server("0.0.0.0", http_port, _local_services)
-    
+    dispatcher = Dispatcher()
+    core = core_init(dispatcher, root_dir, instance_id, port)
     _register_all_local_services()
     return core
-
-def _remote_call(target_address, service_name, args):
-    """Perform HTTP POST to remote control plane."""
-    url = f"http://{target_address}/call/{service_name}"
-    
-    # Serialize args using pickle then base64
-    args_bytes = pickle.dumps(args)
-    args_b64 = base64.b64encode(args_bytes).decode('utf-8')
-    
-    payload = {
-        "args_pickle_b64": args_b64
-    }
-    
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode('utf-8'),
-        headers={'Content-Type': 'application/json'}
-    )
-    
-    with urllib.request.urlopen(req) as response:
-        resp_data = json.loads(response.read().decode('utf-8'))
-        
-    if resp_data.get("status") != "ok":
-        raise RuntimeError(f"Remote call failed: {resp_data.get('error')}")
-        
-    result_b64 = resp_data["result_pickle_b64"]
-    result_bytes = base64.b64decode(result_b64)
-    return pickle.loads(result_bytes)
 
 def call(service_name: str, *args):
     """
@@ -78,12 +65,16 @@ def call(service_name: str, *args):
         raise RuntimeError(f"Service '{service_name}' not found")
     
     # 2. Load Balancing (Random)
-    target_address = random.choice(instances) # IP:HTTP_PORT
+    target_address = random.choice(instances) # IP:PORT (now unified)
     
-    # 3. Execution (RPC)
+    # 3. Execution (RPC via gRPC)
     # Check if local optimization (optional)
-    # But for strict distributed demo, we can just always use network or check if target is us.
-    # checking if target_addr in my_addrs?
-    # Simple: Just call remote.
-    
-    return _remote_call(target_address, service_name, args)
+    if target_address == core.get_address():
+       # Just run locally
+       if service_name in _local_services:
+           return _local_services[service_name](*args)
+
+    # Remote Call
+    args_pickle = pickle.dumps(args)
+    result_pickle = core.remote_call(target_address, service_name, args_pickle)
+    return pickle.loads(bytes(result_pickle))

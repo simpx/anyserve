@@ -4,6 +4,7 @@ package anyserve;
 
 service AgentService {
   rpc GetObject (GetObjectRequest) returns (GetObjectResponse);
+  rpc Call (CallRequest) returns (CallResponse);
 }
 
 message GetObjectRequest {
@@ -13,4 +14,15 @@ message GetObjectRequest {
 message GetObjectResponse {
   bytes data = 1;
   bool found = 2;
+}
+
+message CallRequest {
+  string service_name = 1;
+  bytes args_pickle = 2;
+}
+
+message CallResponse {
+  bytes result_pickle = 1;
+  string error = 2;
+  bool success = 3;
 }
