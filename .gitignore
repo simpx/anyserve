@@ -1,0 +1,35 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+*.so
+
+# Virtual environments
+.venv
+env/
+venv/
+ENV/
+
+# Rust generated files
+target/
+
+# IDE / Editor
+.vscode/
+.idea/
+.DS_Store
+
+# MyPy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Ruff
+.ruff_cache/
+
+# Coverage
+.coverage
+htmlcov/
+coverage.xml

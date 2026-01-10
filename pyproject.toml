@@ -1,0 +1,26 @@
+[project]
+name = "anyserve"
+version = "0.1.0"
+description = "A Python API with Rust Runtime POC"
+authors = [
+    { name = "simpx", email = "simpxx@gmail.com" }
+]
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.109.0",
+    "uvicorn>=0.27.0",
+]
+
+[build-system]
+requires = ["maturin>=1.4,<2.0"]
+build-backend = "maturin"
+
+[tool.maturin]
+python-source = "python"
+module-name = "anyserve._core"
+
+[dependency-groups]
+dev = [
+    "maturin>=1.11.5",
+]
