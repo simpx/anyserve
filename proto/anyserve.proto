@@ -2,53 +2,20 @@ syntax = "proto3";
 
 package anyserve;
 
-service AgentService {
-  rpc GetObject (GetObjectRequest) returns (GetObjectResponse);
-  rpc Call (CallRequest) returns (CallResponse);
+// Main inference service exposed by Rust Runtime
+service AnyServe {
+  // Core inference interface
+  rpc Infer (InferRequest) returns (InferResponse);
 }
 
-// Scheduler service for capability-based routing
-service SchedulerService {
-  rpc RegisterReplica (RegisterReplicaRequest) returns (RegisterReplicaResponse);
-  rpc LookupCapability (LookupCapabilityRequest) returns (LookupCapabilityResponse);
+message InferRequest {
+  string capability = 1;      // e.g., "small", "large"
+  bytes inputs = 2;           // Input data as bytes or JSON string
+  repeated string input_refs = 3; // Associated Object IDs (file paths)
 }
 
-message GetObjectRequest {
-  string uuid = 1;
-}
-
-message GetObjectResponse {
-  bytes data = 1;
-  bool found = 2;
-}
-
-message CallRequest {
-  string capability = 1;  // Capability instead of service_name
-  bytes args_pickle = 2;
-  bool is_delegated = 3;  // Track delegation to prevent recursive delegation
-}
-
-message CallResponse {
-  bytes result_pickle = 1;
-  string error = 2;
-  bool success = 3;
-}
-
-// Scheduler messages
-message RegisterReplicaRequest {
-  string replica_id = 1;
-  string endpoint = 2;
-  repeated string capabilities = 3;
-}
-
-message RegisterReplicaResponse {
-  bool success = 1;
-}
-
-message LookupCapabilityRequest {
-  string capability = 1;
-}
-
-message LookupCapabilityResponse {
-  repeated string endpoints = 1;  // List of replica endpoints that can serve this capability
+message InferResponse {
+  bytes output = 1;
+  repeated string output_refs = 2;  // Output Object IDs for large data
+  bool delegated = 3;         // Indicates if request was delegated (for debugging)
 }

@@ -1,7 +1,7 @@
 [project]
 name = "anyserve"
 version = "0.1.0"
-description = "A Python API with Rust Runtime POC"
+description = "anyServe - Capability-Oriented Serving Runtime"
 authors = [
     { name = "simpx", email = "simpxx@gmail.com" }
 ]
@@ -10,17 +10,20 @@ requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.109.0",
     "uvicorn>=0.27.0",
+    "grpcio>=1.60.0",
+    "grpcio-tools>=1.60.0",
+    "requests>=2.31.0",
 ]
 
 [build-system]
-requires = ["maturin>=1.4,<2.0"]
-build-backend = "maturin"
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
 
-[tool.maturin]
-python-source = "python"
-module-name = "anyserve._core"
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["anyserve_scheduler*", "anyserve_worker*", "python*"]
 
 [dependency-groups]
 dev = [
-    "maturin>=1.11.5",
+    "pytest>=7.0.0",
 ]
