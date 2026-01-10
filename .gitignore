@@ -33,3 +33,4 @@ dmypy.json
 .coverage
 htmlcov/
 coverage.xml
+tmp_anyserve/
