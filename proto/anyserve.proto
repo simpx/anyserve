@@ -7,6 +7,12 @@ service AgentService {
   rpc Call (CallRequest) returns (CallResponse);
 }
 
+// Scheduler service for capability-based routing
+service SchedulerService {
+  rpc RegisterReplica (RegisterReplicaRequest) returns (RegisterReplicaResponse);
+  rpc LookupCapability (LookupCapabilityRequest) returns (LookupCapabilityResponse);
+}
+
 message GetObjectRequest {
   string uuid = 1;
 }
@@ -17,12 +23,32 @@ message GetObjectResponse {
 }
 
 message CallRequest {
-  string service_name = 1;
+  string capability = 1;  // Capability instead of service_name
   bytes args_pickle = 2;
+  bool is_delegated = 3;  // Track delegation to prevent recursive delegation
 }
 
 message CallResponse {
   bytes result_pickle = 1;
   string error = 2;
   bool success = 3;
+}
+
+// Scheduler messages
+message RegisterReplicaRequest {
+  string replica_id = 1;
+  string endpoint = 2;
+  repeated string capabilities = 3;
+}
+
+message RegisterReplicaResponse {
+  bool success = 1;
+}
+
+message LookupCapabilityRequest {
+  string capability = 1;
+}
+
+message LookupCapabilityResponse {
+  repeated string endpoints = 1;  // List of replica endpoints that can serve this capability
 }

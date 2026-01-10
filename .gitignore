@@ -38,3 +38,4 @@ tmp_anyserve/
 # Logs and temp
 *.log
 tmp_distributed/
+tmp_mvp/

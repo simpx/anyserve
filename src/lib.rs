@@ -59,8 +59,8 @@ impl AgentService for AgentServiceImpl {
         let result: Result<Vec<u8>, String> = Python::with_gil(|py| {
             let py_bytes = pyo3::types::PyBytes::new(py, &req.args_pickle);
             
-            // Expected Dispatcher python method: dispatch(service_name, args_pickle_bytes) -> result_pickle_bytes
-            let result_obj = self.dispatcher.call_method1(py, "dispatch", (req.service_name, py_bytes))
+            // Expected Dispatcher python method: dispatch(capability, args_pickle_bytes, is_delegated) -> result_pickle_bytes
+            let result_obj = self.dispatcher.call_method1(py, "dispatch", (req.capability, py_bytes, req.is_delegated))
                 .map_err(|e: PyErr| e.to_string())?;
             
             let res_bytes = result_obj.extract::<Vec<u8>>(py)
@@ -100,10 +100,10 @@ impl AnyserveCore {
     fn new(root_dir: String, instance_id: String, port: u16, dispatcher: Py<PyAny>) -> PyResult<Self> {
         let root = PathBuf::from(&root_dir);
         let instance_path = root.join("instances").join(&instance_id).join("objects");
-        let names_path = root.join("names");
+        let capabilities_path = root.join("capabilities");
 
         fs::create_dir_all(&instance_path)?;
-        fs::create_dir_all(&names_path)?;
+        fs::create_dir_all(&capabilities_path)?;
 
         let core = AnyserveCore {
             root_dir: root.clone(),
@@ -163,7 +163,8 @@ impl AnyserveCore {
         }
     }
 
-    fn remote_call(&self, target_address: String, service_name: String, args_pickle: Vec<u8>) -> PyResult<Vec<u8>> {
+    /// Remote call with capability-based routing and delegation support
+    fn remote_call(&self, target_address: String, capability: String, args_pickle: Vec<u8>, is_delegated: bool) -> PyResult<Vec<u8>> {
         let thread_handle = std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async {
@@ -173,8 +174,9 @@ impl AnyserveCore {
                     .map_err(|e| e.to_string())?;
 
                 let request = tonic::Request::new(CallRequest { 
-                    service_name, 
-                    args_pickle 
+                    capability, 
+                    args_pickle,
+                    is_delegated,
                 });
                 let response = client.call(request).await
                     .map_err(|e| e.to_string())?;
@@ -194,12 +196,13 @@ impl AnyserveCore {
         }
     }
 
-    fn register_service(&self, service_name: String) -> PyResult<()> {
-        let service_dir = self.root_dir.join("names").join(&service_name);
-        fs::create_dir_all(&service_dir)?;
+    /// Register a capability with the scheduler
+    fn register_capability(&self, capability: String) -> PyResult<()> {
+        let capability_dir = self.root_dir.join("capabilities").join(&capability);
+        fs::create_dir_all(&capability_dir)?;
         
-        // Register data plane port as control plane port too (Unified)
-        let instance_file = service_dir.join(&self.instance_id);
+        // Register this replica as a provider for this capability
+        let instance_file = capability_dir.join(&self.instance_id);
         let address = format!("127.0.0.1:{}", self.port);
         let mut file = fs::File::create(instance_file)?;
         file.write_all(address.as_bytes())?;
@@ -207,12 +210,13 @@ impl AnyserveCore {
         Ok(())
     }
 
-    fn lookup_service(&self, service_name: String) -> PyResult<Vec<String>> {
-        let service_dir = self.root_dir.join("names").join(&service_name);
+    /// Lookup replicas that can serve a capability (scheduler function)
+    fn lookup_capability(&self, capability: String) -> PyResult<Vec<String>> {
+        let capability_dir = self.root_dir.join("capabilities").join(&capability);
         let mut instances = Vec::new();
 
-        if service_dir.exists() {
-            for entry in fs::read_dir(service_dir)? {
+        if capability_dir.exists() {
+            for entry in fs::read_dir(capability_dir)? {
                 let entry = entry?;
                 let file_name = entry.file_name();
                 if let Some(_name) = file_name.to_str() {
