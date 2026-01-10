@@ -38,3 +38,8 @@ tmp_anyserve/
 # Logs and temp
 *.log
 tmp_distributed/
+tmp_mvp/
+
+# Generated gRPC stubs
+*_pb2.py
+*_pb2_grpc.py

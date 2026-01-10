@@ -2,27 +2,20 @@ syntax = "proto3";
 
 package anyserve;
 
-service AgentService {
-  rpc GetObject (GetObjectRequest) returns (GetObjectResponse);
-  rpc Call (CallRequest) returns (CallResponse);
+// Main inference service exposed by Rust Runtime
+service AnyServe {
+  // Core inference interface
+  rpc Infer (InferRequest) returns (InferResponse);
 }
 
-message GetObjectRequest {
-  string uuid = 1;
+message InferRequest {
+  string capability = 1;      // e.g., "small", "large"
+  bytes inputs = 2;           // Input data as bytes or JSON string
+  repeated string input_refs = 3; // Associated Object IDs (file paths)
 }
 
-message GetObjectResponse {
-  bytes data = 1;
-  bool found = 2;
-}
-
-message CallRequest {
-  string service_name = 1;
-  bytes args_pickle = 2;
-}
-
-message CallResponse {
-  bytes result_pickle = 1;
-  string error = 2;
-  bool success = 3;
+message InferResponse {
+  bytes output = 1;
+  repeated string output_refs = 2;  // Output Object IDs for large data
+  bool delegated = 3;         // Indicates if request was delegated (for debugging)
 }
