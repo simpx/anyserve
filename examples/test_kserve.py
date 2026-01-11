@@ -1,39 +1,61 @@
+import grpc
 import sys
 import os
-import grpc
 
-# Add root to sys.path to find anyserve_worker
-sys.path.append(os.getcwd())
+# Ensure we can find packages
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from anyserve_worker.proto import grpc_predict_v2_pb2
-from anyserve_worker.proto import grpc_predict_v2_pb2_grpc
+try:
+    from anyserve_worker.proto import grpc_predict_v2_pb2
+    from anyserve_worker.proto import grpc_predict_v2_pb2_grpc
+except ImportError:
+    print("Could not import protos. Make sure pyproject.toml dependencies are installed or build.rs ran.")
+    sys.exit(1)
 
-def main():
-    print("Connecting to localhost:9000...")
-    channel = grpc.insecure_channel("localhost:9000")
-    client = grpc_predict_v2_pb2_grpc.GRPCInferenceServiceStub(channel)
-    
+def run():
+    # Rust proxy listens on 8080 by default
+    channel = grpc.insecure_channel('localhost:8080')
+    stub = grpc_predict_v2_pb2_grpc.GRPCInferenceServiceStub(channel)
+
+    # 1. Check Server Live
+    print("Checking ServerLive...")
     try:
-        resp = client.ServerLive(grpc_predict_v2_pb2.ServerLiveRequest())
+        resp = stub.ServerLive(grpc_predict_v2_pb2.ServerLiveRequest())
         print(f"ServerLive: {resp.live}")
-        
-        resp = client.ServerReady(grpc_predict_v2_pb2.ServerReadyRequest())
-        print(f"ServerReady: {resp.ready}")
-        
-        # Test Inference
-        req = grpc_predict_v2_pb2.ModelInferRequest(model_name="test_model", model_version="1")
-        # Add input
-        inp = req.inputs.add()
-        inp.name = "input0"
-        inp.datatype = "INT32"
-        inp.shape.extend([1, 1])
-        inp.contents.int_contents.append(42)
-        
-        resp = client.ModelInfer(req)
-        print(f"ModelInfer Result: {resp}")
-        
     except grpc.RpcError as e:
-        print(f"RPC Error: {e}")
+        print(f"ServerLive failed (Is the server running?): {e}")
+        return
 
-if __name__ == "__main__":
-    main()
+    # 2. Check Model Ready
+    print("Checking ModelReady for 'math_double'...")
+    resp = stub.ModelReady(grpc_predict_v2_pb2.ModelReadyRequest(name="math_double", version="1"))
+    print(f"ModelReady: {resp.ready}")
+
+    # 3. Model Infer
+    print("Sending ModelInferRequest to 'math_double'...")
+    
+    # Create input tensor [1, 2, 3] (INT32)
+    infer_input = grpc_predict_v2_pb2.ModelInferRequest.InferInputTensor(
+        name="input_1",
+        datatype="INT32",
+        shape=[3],
+    )
+    infer_input.contents.int_contents.extend([10, 20, 30])
+
+    request = grpc_predict_v2_pb2.ModelInferRequest(
+        model_name="math_double",
+        model_version="1",
+        inputs=[infer_input]
+    )
+
+    try:
+        response = stub.ModelInfer(request)
+        print("Received Response!")
+        for output in response.outputs:
+            print(f"Output: {output.name}")
+            print(f"Data: {output.contents.int_contents}")
+    except grpc.RpcError as e:
+        print(f"ModelInfer failed: {e}")
+
+if __name__ == '__main__':
+    run()

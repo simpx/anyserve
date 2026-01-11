@@ -187,9 +187,31 @@ impl GrpcInferenceService for ProxyService {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<String> = env::args().collect();
-    let port: u16 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(8080);
+    // Parse arguments manually for MVP:
+    // anyserve [OPTIONS] <APP_STR>
+    // Options: --port <PORT>
     
+    let args: Vec<String> = env::args().collect();
+    let mut target = String::new();
+    let mut port = 8080;
+    
+    let mut i = 1;
+    while i < args.len() {
+        let arg = &args[i];
+        if arg == "--port" {
+            if i + 1 < args.len() {
+                 port = args[i+1].parse().unwrap_or(8080);
+                 i += 1;
+            }
+        } else if !arg.starts_with("-") {
+            // Assume positional arg is target if we haven't found one yet
+            if target.is_empty() {
+                target = arg.clone();
+            }
+        }
+        i += 1;
+    }
+
     // 1. Generate Random UDS Path
     let uds_path = format!("/tmp/anyserve_worker_{}.sock", Uuid::new_v4().simple());
     
@@ -222,8 +244,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Spawning Python worker with Notify FD: {}", write_fd);
     let python_path = env::var("PYTHON_PATH").unwrap_or_else(|_| "python".to_string());
     
+    // Determine worker command logic
+    // 1. If `target` (CLI arg) is set -> python -m anyserve_worker.loader <target>
+    // 2. Else -> default environment logic
+    let python_args = if !target.is_empty() {
+        println!("Launching target app: {}", target);
+        vec!["-m".to_string(), "anyserve_worker.loader".to_string(), target]
+    } else if let Ok(script) = env::var("ANSERVE_WORKER_SCRIPT") {
+        vec![script]
+    } else if let Ok(module) = env::var("ANSERVE_WORKER_MODULE") {
+        vec!["-m".to_string(), module]
+    } else {
+        // Fallback or Help? For now default echo
+        vec!["-m".to_string(), "anyserve_worker".to_string()]
+    };
+
     let mut child = tokio::process::Command::new(&python_path)
-        .args(["-m", "anyserve_worker"])  // Use module
+        .args(&python_args)
         .env("ANSERVE_WORKER_UDS", &uds_path)
         .env("ANSERVE_READY_FD", write_fd.to_string())
         .env("ANSERVE_H2D_FD", h2d_fd.to_string())

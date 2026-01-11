@@ -23,7 +23,56 @@
 
 ## 快速开始
 
-环境要求：Python 3.11+、Rust、uv、just（可选）。
+环境要求：Python 3.11+、Rust (Cargo)。
+
+### 1. 安装
+
+```bash
+# 安装 Python 库 (anyserve_worker)
+pip install -e .
+
+# 安装 CLI 工具 (anyserve)
+cargo install --path .
+```
+
+### 2. 定义应用 (python)
+
+创建一个 Python 文件 (例如 `app.py`):
+
+```python
+from anyserve_worker import Worker, ModelInferResponse
+
+app = Worker()
+
+@app.model("my_model")
+def impl(request):
+    print(f"Handling request for {request.model_name}")
+    return ModelInferResponse(model_name=request.model_name)
+```
+
+### 3. 启动服务
+
+使用 `anyserve` 命令行工具启动：
+
+```bash
+# 格式: anyserve <module>:<variable>
+anyserve app:app --port 8080
+```
+
+### 4. 客户端调用
+
+使用内置 Client 进行交互：
+
+```python
+from anyserve_worker import Client
+
+client = Client("localhost:8080")
+if client.is_alive():
+    result = client.infer("my_model", inputs={"input_1": [1, 2, 3]})
+    print(result)
+```
+
+## 老版本快速开始 (Dev Mode)
 
 1) 初始化环境（如需安装 Rust/just）：
 ```bash

@@ -20,7 +20,7 @@ tonic-build = "0.12"
 protoc-bin-vendored = "3.0"
 
 [[bin]]
-name = "anyserve-node"
+name = "anyserve"
 path = "src/main.rs"
 
 [profile.release]
