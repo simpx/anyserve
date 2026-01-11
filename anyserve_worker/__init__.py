@@ -1,132 +1,119 @@
 """
-anyServe Python Worker - Execution Plane
-
-This worker is spawned by Rust Runtime as a subprocess.
-Communication is via Stdio (JSON lines).
-
-Protocol:
-- Input (from Rust): JSON line with {"op": "infer", "capability": "...", "inputs": "...", "input_refs": [...]}
-- Output (to Rust): JSON line with {"output": "...", "output_refs": [...], "error": null}
+anyServe Python Worker - KServe v2 Execution Plane
 """
-import sys
-import json
-import time
 import os
-import uuid
+import sys
+import time
+import grpc
+import logging
+from concurrent import futures
+import socket
 
-# Configuration
-DATA_DIR = os.environ.get("ANYSERVE_DATA_DIR", "/tmp/anyserve_data")
-LARGE_OUTPUT_THRESHOLD = 1000  # bytes
+# Import generated protos
+# Note: We are running as a module 'anyserve_worker', so relative imports work if structure is correct.
+# If run as 'python -m anyserve_worker', sys.path includes CWD.
+try:
+    from .proto import grpc_predict_v2_pb2
+    from .proto import grpc_predict_v2_pb2_grpc
+except ImportError:
+    # Fallback for dev environment or direct execution
+    import sys
+    sys.path.append(os.path.join(os.path.dirname(__file__), "proto"))
+    import grpc_predict_v2_pb2
+    import grpc_predict_v2_pb2_grpc
 
-
-class Worker:
+class InferenceService(grpc_predict_v2_pb2_grpc.GRPCInferenceServiceServicer):
     def __init__(self):
-        self.current_capability = None
-        os.makedirs(DATA_DIR, exist_ok=True)
-        print(f"[Worker] Initialized. Data dir: {DATA_DIR}", file=sys.stderr)
-    
-    def mock_switch_model(self, capability: str):
-        """Simulate model switching overhead."""
-        if self.current_capability != capability:
-            print(f"[Worker] Switching from '{self.current_capability}' to '{capability}'...", file=sys.stderr)
-            time.sleep(2)  # Simulate switching cost
-            self.current_capability = capability
-            print(f"[Worker] Switch complete.", file=sys.stderr)
-    
-    def mock_inference(self, inputs: str, capability: str) -> str:
-        """Simulate inference - reverse string or append text."""
-        print(f"[Worker] Processing '{capability}' with input length {len(inputs)}", file=sys.stderr)
-        time.sleep(1)  # Simulate inference time
-        
-        if capability == "small":
-            # Simple: reverse the input
-            return inputs[::-1]
-        elif capability == "large":
-            # Heavy: append repeated text
-            return f"LARGE_RESULT: {inputs}" + ("*" * 500)
-        else:
-            return f"[{capability}] processed: {inputs}"
-    
-    def save_to_fs(self, data: str) -> str:
-        """Save large data to filesystem and return reference."""
-        ref_id = str(uuid.uuid4())
-        path = os.path.join(DATA_DIR, ref_id)
-        with open(path, 'w') as f:
-            f.write(data)
-        print(f"[Worker] Saved large output to {path}", file=sys.stderr)
-        return ref_id
-    
-    def load_from_fs(self, ref: str) -> str:
-        """Load data from filesystem reference."""
-        path = os.path.join(DATA_DIR, ref)
-        if os.path.exists(path):
-            with open(path, 'r') as f:
-                return f.read()
-        return ""
-    
-    def process_request(self, request: dict) -> dict:
-        """Process a single request."""
-        op = request.get("op", "")
-        
-        if op != "infer":
-            return {"output": "", "output_refs": [], "error": f"Unknown op: {op}"}
-        
-        capability = request.get("capability", "")
-        inputs = request.get("inputs", "")
-        input_refs = request.get("input_refs", [])
-        
-        try:
-            # Load any input references
-            if input_refs:
-                for ref in input_refs:
-                    loaded = self.load_from_fs(ref)
-                    inputs += loaded
-            
-            # Simulate model switch
-            self.mock_switch_model(capability)
-            
-            # Simulate inference
-            result = self.mock_inference(inputs, capability)
-            
-            # Check if output is large
-            output_refs = []
-            if len(result) > LARGE_OUTPUT_THRESHOLD:
-                ref = self.save_to_fs(result)
-                output_refs.append(ref)
-                result = ""  # Clear output, use ref instead
-            
-            return {"output": result, "output_refs": output_refs, "error": None}
-        
-        except Exception as e:
-            return {"output": "", "output_refs": [], "error": str(e)}
-    
-    def run(self):
-        """Main loop - read JSON lines from stdin, process, write to stdout."""
-        print("[Worker] Starting main loop...", file=sys.stderr)
-        
-        for line in sys.stdin:
-            line = line.strip()
-            if not line:
-                continue
-            
-            try:
-                request = json.loads(line)
-                response = self.process_request(request)
-                print(json.dumps(response), flush=True)
-            except json.JSONDecodeError as e:
-                error_response = {"output": "", "output_refs": [], "error": f"JSON parse error: {e}"}
-                print(json.dumps(error_response), flush=True)
-            except Exception as e:
-                error_response = {"output": "", "output_refs": [], "error": f"Worker error: {e}"}
-                print(json.dumps(error_response), flush=True)
-        
-        print("[Worker] Exiting.", file=sys.stderr)
+        self.ready = False
+        print("[Worker] Service initialized", file=sys.stderr)
 
+    def ServerLive(self, request, context):
+        return grpc_predict_v2_pb2.ServerLiveResponse(live=True)
+
+    def ServerReady(self, request, context):
+        return grpc_predict_v2_pb2.ServerReadyResponse(ready=True)
+
+    def ModelReady(self, request, context):
+        return grpc_predict_v2_pb2.ModelReadyResponse(ready=True)
+
+    def ServerMetadata(self, request, context):
+        return grpc_predict_v2_pb2.ServerMetadataResponse(name="anyserve-python", version="0.1.0")
+
+    def ModelMetadata(self, request, context):
+        return grpc_predict_v2_pb2.ModelMetadataResponse(
+            name=request.name,
+            version=request.version,
+            platform="python"
+        )
+
+    def ModelInfer(self, request, context):
+        # ECHO implementation for now, with mock processing
+        print(f"[Worker] ModelInfer called for {request.model_name}", file=sys.stderr)
+        
+        # Construct response
+        response = grpc_predict_v2_pb2.ModelInferResponse(
+            model_name=request.model_name,
+            model_version=request.model_version,
+            id=request.id
+        )
+        
+        # Just echo inputs to outputs for PoC
+        for inp in request.inputs:
+            out = response.outputs.add()
+            out.name = inp.name
+            out.datatype = inp.datatype
+            out.shape.extend(inp.shape)
+            # Cannot copy directly due to different classes
+            # out.contents.CopyFrom(inp.contents)
+            out.contents.int_contents.extend(inp.contents.int_contents)
+            
+            # If payload is in raw_input_contents, we should handle it (omitted for brevity)
+            
+        print(f"[Worker] ModelInfer finished", file=sys.stderr)
+        return response
+
+def serve():
+    logging.basicConfig(level=logging.INFO)
+    
+    uds_path = os.environ.get("ANSERVE_WORKER_UDS")
+    ready_fd_str = os.environ.get("ANSERVE_READY_FD")
+    
+    if not uds_path:
+        print("Error: ANSERVE_WORKER_UDS not set", file=sys.stderr)
+        # For testing locally without env, use default or fail
+        # sys.exit(1)
+        uds_path = "/tmp/anyserve_debug.sock"
+
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+    grpc_predict_v2_pb2_grpc.add_GRPCInferenceServiceServicer_to_server(
+        InferenceService(), server
+    )
+    
+    # Bind to UDS
+    address = f'unix://{uds_path}'
+    if os.path.exists(uds_path):
+        os.unlink(uds_path)
+        
+    server.add_insecure_port(address)
+    print(f"[Worker] Binding to {address}", file=sys.stderr)
+    
+    server.start()
+    
+    # Signal readiness
+    if ready_fd_str:
+        try:
+            fd = int(ready_fd_str)
+            with os.fdopen(fd, 'w') as f:
+                f.write("READY")
+                f.flush()
+            print("[Worker] Signaled READY", file=sys.stderr)
+        except Exception as e:
+            print(f"[Worker] Failed to signal ready: {e}", file=sys.stderr)
+    
+    server.wait_for_termination()
 
 def main():
-    worker = Worker()
-    worker.run()
-
+    serve()
 
 if __name__ == "__main__":
     main()
