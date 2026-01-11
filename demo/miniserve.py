@@ -18,6 +18,23 @@ class Request:
 class App:
     def __init__(self):
         self.routes = {}
+        # --- Arena Mode: Pre-attach to the global heavy memory block ---
+        self.arena_shm = None
+        self.arena_buf = None
+        try:
+            # Try to attach to the global arena created by Rust
+            # Note: We try a few naming conventions for macOS/Linux compat
+            names = ["/anyserve-arena-v3", "anyserve-arena-v3"]
+            for name in names:
+                try:
+                    self.arena_shm = shared_memory.SharedMemory(name=name)
+                    self.arena_buf = self.arena_shm.buf
+                    print(f" -> [Python] Attached to Shared Arena: {name} ({self.arena_shm.size} bytes)")
+                    break
+                except FileNotFoundError:
+                    continue
+        except Exception as e:
+            print(f" -> [Python] Warning: Could not attach to arena (will use fallback): {e}")
 
     def route(self, path, method="GET"):
         def decorator(func):
@@ -47,71 +64,93 @@ class App:
                     self.send_error(404, "Not Found")
                     return
 
-                # --- Magic: Check for Shared Memory Headers ---
-                shm_key = self.headers.get('X-Shm-Key')
+                # --- Magic: Optimized Data Path ---
+                shm_key = self.headers.get('X-Shm-Key')     # Legacy/Pool Mode
+                shm_offset = self.headers.get('X-Shm-Offset') # Arena Mode (Fastest)
                 shm_size = self.headers.get('X-Shm-Size')
                 
                 body = None
                 transport_method = "UDS (Standard)"
 
-                if shm_key and shm_size:
-                    # Case 1: Data via Shared Memory (Zero-ish Copy reading)
-                    try:
+                try:
+                    if shm_offset and shm_size and app_instance.arena_buf:
+                        # --- Level 3: Arena Mode (Zero-Syscall) ---
+                        offset = int(shm_offset)
                         size = int(shm_size)
-                        # Try to attach to existing SHM with various name formats
-                        # Key issue: Rust 'shared_memory' vs Python 'multiprocessing.shared_memory' naming on macOS
+                        
+                        # Zero-Copy Magic: Create a memoryview directly on the global buffer
+                        # This behaves like bytes, but points to existing memory.
+                        body = memoryview(app_instance.arena_buf)[offset:offset+size]
+                        transport_method = f"ARENA (Offset {offset})"
+                        
+                    elif shm_key and shm_size:
+                        # --- Level 2: Pool/Dynamic Mode (1 Syscall) ---
+                        size = int(shm_size)
+                        # ... (existing fallback logic if needed) ...
                         candidates = [shm_key]
                         if shm_key.startswith('/'):
-                            candidates.append(shm_key[1:]) # Try without slash
+                            candidates.append(shm_key[1:])
                         else:
-                            candidates.append('/' + shm_key) # Try with slash
+                            candidates.append('/' + shm_key)
                         
                         existing_shm = None
-                        last_error = None
-                        
                         for name in candidates:
                             try:
                                 existing_shm = shared_memory.SharedMemory(name=name)
                                 break
-                            except Exception as e:
-                                last_error = e
+                            except: pass
                         
-                        if existing_shm is None:
-                            raise last_error
-
-                        # Read data directly from memory
-                        # Note: In real world, we might use memoryview to avoid copy, 
-                        # but for this string-based demo we decode it.
-                        body = bytes(existing_shm.buf[:size]).decode('utf-8')
-                        transport_method = f"SHARED MEMORY ({shm_key})"
-                        existing_shm.close() # Detach
-                    except Exception as e:
-                        print(f"Error reading SHM: {e}")
-                        self.send_error(500, f"Shared Memory Error: {str(e)}")
-                        return
-                else:
-                    # Case 2: Standard Body via Socket
-                    content_length = int(self.headers.get('Content-Length', 0))
-                    if content_length > 0:
-                        body = self.rfile.read(content_length).decode('utf-8')
-
+                        if existing_shm:
+                            # Must copy to bytes because we close the shm handle
+                            body = bytes(existing_shm.buf[:size])
+                            transport_method = f"Dynamic ({shm_key})"
+                            existing_shm.close()
+                    else:
+                        # --- Level 1: Standard UDS (Socket Copy) ---
+                        content_length = int(self.headers.get('Content-Length', 0))
+                        if content_length > 0:
+                            body = self.rfile.read(content_length) # Keep as bytes
+                except Exception as e:
+                     print(f"Error accessing body: {e}")
+                     body = None
+                     transport_method = "Error"
+                     
                 req = Request(self.path, method, self.headers, body)
                 
                 try:
                     resp_data = func(req)
+                    
+                    # Helper: Allow returning raw bytes/str directly, or dict
                     if isinstance(resp_data, dict):
-                        resp_data['_meta'] = {
+                        # Fix for JSON serialization of bytes/memoryview in debug echo
+                        if '_meta' not in resp_data:
+                             resp_data['_meta'] = {}
+                        resp_data['_meta'].update({
                             "worker_pid": os.getpid(),
                             "transport": transport_method
-                        }
-
-                    resp_bytes = json.dumps(resp_data).encode('utf-8')
+                        })
+                        
+                        # Custom compact encoder to handle bytes in dict for debugging
+                        def default_serializer(o):
+                            if isinstance(o, (bytes, memoryview)):
+                                return f"<binary data len={len(o)}>"
+                            raise TypeError
+                            
+                        resp_bytes = json.dumps(resp_data, default=default_serializer).encode('utf-8')
+                    elif isinstance(resp_data, str):
+                         resp_bytes = resp_data.encode('utf-8')
+                    elif isinstance(resp_data, bytes):
+                        resp_bytes = resp_data
+                    else:
+                        resp_bytes = b""
                     
                     self.send_response(200)
                     self.send_header('Content-type', 'application/json')
                     self.end_headers()
                     self.wfile.write(resp_bytes)
                 except Exception as e:
+                    import traceback
+                    traceback.print_exc()
                     self.send_error(500, str(e))
 
         return RequestHandler

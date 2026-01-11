@@ -4,14 +4,19 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+tonic = "0.12"
+prost = "0.13"
 tokio = { version = "1.0", features = ["full"] }
-axum = { version = "0.7", features = ["macros", "http1"] } # Added macros
-hyper = { version = "1.0", features = ["full"] }
-hyper-util = { version = "0.1", features = ["full", "client-legacy"] }
-tower = { version = "0.4", features = ["util"] }
-http-body-util = "0.1"
-anyhow = "1.0"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
 shared_memory = "0.12"
-uuid = { version = "1.0", features = ["v4"] }
+tower = { version = "0.4", features = ["util"] }
+uuid = { version = "1.10", features = ["v4"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+libc = "0.2"
+
+[build-dependencies]
+tonic-build = "0.12"
+protoc-bin-vendored = "3.0"
+
+[[bin]]
+name = "anyserve-demo"
+path = "src/main.rs"

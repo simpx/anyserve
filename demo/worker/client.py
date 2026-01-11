@@ -1,36 +1,3 @@
-#!/bin/bash
-set -e
-PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-DEMO_DIR="$PROJECT_DIR/demo"
-
-echo "=== Setup ==="
-cd "$DEMO_DIR"
-
-echo "=== Generating Python gRPC Stubs ==="
-# Generate in demo/worker
-uv run python -m grpc_tools.protoc \
-    -I"$DEMO_DIR/proto" \
-    --python_out="$DEMO_DIR/worker" \
-    --grpc_python_out="$DEMO_DIR/worker" \
-    "$DEMO_DIR/proto/grpc_predict_v2.proto"
-
-# Fix import (MacOS sed) - DISABLED for standalone script usage
-# sed -i '' 's/import grpc_predict_v2_pb2/from . import grpc_predict_v2_pb2/' "$DEMO_DIR/worker/grpc_predict_v2_pb2_grpc.py"
-
-echo "=== Building Rust Proxy ==="
-# We rely on protoc-bin-vendored in build.rs, so just cargo build
-cargo build
-
-echo "=== Running Demo ==="
-# Run the Rust binary. It will spawn python worker.
-"$DEMO_DIR/target/debug/anyserve-demo" &
-RUST_PID=$!
-
-sleep 5
-
-echo "=== Client Test ==="
-# Create temporary client
-cat <<EOF > "$DEMO_DIR/worker/client.py"
 import grpc
 import sys
 import os
@@ -72,9 +39,3 @@ def run():
 
 if __name__ == "__main__":
     run()
-EOF
-
-uv run python "$DEMO_DIR/worker/client.py"
-
-kill $RUST_PID
-echo "=== Done ==="
