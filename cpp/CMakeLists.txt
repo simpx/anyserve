@@ -26,6 +26,8 @@ set(GRPC_PREDICT_GRPC_HDR "${GENERATED_DIR}/grpc_predict_v2.grpc.pb.h")
 
 set(PROTOC_EXECUTABLE "${protobuf_PACKAGE_FOLDER_RELEASE}/bin/protoc")
 set(GRPC_CPP_PLUGIN "${grpc_PACKAGE_FOLDER_RELEASE}/bin/grpc_cpp_plugin")
+message(STATUS "Using protoc: ${PROTOC_EXECUTABLE}")
+message(STATUS "Using grpc_cpp_plugin: ${GRPC_CPP_PLUGIN}")
 
 set(GRPC_PREDICT_PROTO "${PROTO_SRC_DIR}/grpc_predict_v2.proto")
 
