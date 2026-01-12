@@ -16,8 +16,18 @@ dependencies = [
 ]
 
 [build-system]
-requires = ["setuptools>=61.0"]
-build-backend = "setuptools.build_meta"
+requires = [
+    "scikit-build-core>=0.5",
+    "pybind11>=2.11",
+]
+build-backend = "scikit_build_core.build"
+
+[tool.scikit-build]
+cmake.source-dir = "cpp"
+cmake.build-type = "Release"
+cmake.args = ["-DBUILD_PYTHON_EXTENSION=ON"]
+wheel.install-dir = "python/anyserve"
+wheel.packages = ["python/anyserve", "anyserve_scheduler", "anyserve_worker"]
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -26,4 +36,6 @@ include = ["anyserve_scheduler*", "anyserve_worker*", "python*"]
 [dependency-groups]
 dev = [
     "pytest>=7.0.0",
+    "scikit-build-core>=0.5",
+    "pybind11>=2.11",
 ]

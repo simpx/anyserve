@@ -1,0 +1,105 @@
+cmake_minimum_required(VERSION 3.15)
+project(anyserve_cpp CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+# Option to build Python extension
+option(BUILD_PYTHON_EXTENSION "Build pybind11 Python extension" ON)
+# Option to regenerate proto files (requires matching protoc version)
+option(REGENERATE_PROTO "Regenerate protobuf files" OFF)
+
+# Dependencies provided by Conan or system
+find_package(gRPC CONFIG REQUIRED)
+find_package(Protobuf CONFIG REQUIRED)
+find_package(nlohmann_json CONFIG REQUIRED)
+
+if(BUILD_PYTHON_EXTENSION)
+    find_package(pybind11 CONFIG REQUIRED)
+endif()
+
+# Proto files - use pre-generated files by default
+set(PROTO_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../proto")
+set(GENERATED_DIR "${CMAKE_CURRENT_SOURCE_DIR}/generated")
+
+set(GRPC_PREDICT_PB_SRC "${GENERATED_DIR}/grpc_predict_v2.pb.cc")
+set(GRPC_PREDICT_PB_HDR "${GENERATED_DIR}/grpc_predict_v2.pb.h")
+set(GRPC_PREDICT_GRPC_SRC "${GENERATED_DIR}/grpc_predict_v2.grpc.pb.cc")
+set(GRPC_PREDICT_GRPC_HDR "${GENERATED_DIR}/grpc_predict_v2.grpc.pb.h")
+
+if(REGENERATE_PROTO)
+    # Find the protoc compiler and grpc_cpp_plugin
+    get_target_property(gRPC_CPP_PLUGIN_EXECUTABLE gRPC::grpc_cpp_plugin IMPORTED_LOCATION_RELEASE)
+    if(NOT gRPC_CPP_PLUGIN_EXECUTABLE)
+        get_target_property(gRPC_CPP_PLUGIN_EXECUTABLE gRPC::grpc_cpp_plugin IMPORTED_LOCATION)
+    endif()
+
+    set(PROTOC_EXECUTABLE ${Protobuf_PROTOC_EXECUTABLE})
+    if(NOT PROTOC_EXECUTABLE)
+        get_target_property(PROTOC_EXECUTABLE protobuf::protoc IMPORTED_LOCATION_RELEASE)
+        if(NOT PROTOC_EXECUTABLE)
+            get_target_property(PROTOC_EXECUTABLE protobuf::protoc IMPORTED_LOCATION)
+        endif()
+    endif()
+
+    set(GRPC_PREDICT_PROTO "${PROTO_SRC_DIR}/grpc_predict_v2.proto")
+    
+    add_custom_command(
+        OUTPUT ${GRPC_PREDICT_PB_SRC} ${GRPC_PREDICT_PB_HDR} ${GRPC_PREDICT_GRPC_SRC} ${GRPC_PREDICT_GRPC_HDR}
+        COMMAND ${PROTOC_EXECUTABLE}
+        ARGS --grpc_out=${GENERATED_DIR}
+             --cpp_out=${GENERATED_DIR}
+             --plugin=protoc-gen-grpc=${gRPC_CPP_PLUGIN_EXECUTABLE}
+             -I ${PROTO_SRC_DIR}
+             ${GRPC_PREDICT_PROTO}
+        DEPENDS ${GRPC_PREDICT_PROTO}
+        COMMENT "Generating gRPC C++ code from grpc_predict_v2.proto"
+    )
+endif()
+
+# Core library (static, used by both executable and Python extension)
+add_library(anyserve_core_lib STATIC
+    src/shm_manager.cpp
+    src/process_supervisor.cpp
+    src/anyserve_core.cpp
+    ${GRPC_PREDICT_PB_SRC}
+    ${GRPC_PREDICT_GRPC_SRC}
+)
+
+target_include_directories(anyserve_core_lib PUBLIC
+    src
+    ${GENERATED_DIR}
+)
+
+target_link_libraries(anyserve_core_lib PUBLIC
+    gRPC::grpc++
+    gRPC::grpc++_reflection
+    protobuf::libprotobuf
+    nlohmann_json::nlohmann_json
+)
+
+# Standalone executable
+add_executable(anyserve_node
+    src/main.cpp
+)
+
+target_link_libraries(anyserve_node PRIVATE
+    anyserve_core_lib
+)
+
+# Python extension (pybind11)
+if(BUILD_PYTHON_EXTENSION)
+    pybind11_add_module(_core
+        src/python_bindings.cpp
+    )
+    
+    target_link_libraries(_core PRIVATE
+        anyserve_core_lib
+    )
+    
+    # Install to python package directory
+    install(TARGETS _core
+        LIBRARY DESTINATION ${CMAKE_INSTALL_PREFIX}/python/anyserve
+    )
+endif()

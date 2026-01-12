@@ -1,20 +1,15 @@
 # Python-generated files
 __pycache__/
 *.py[oc]
-build/
 dist/
 wheels/
 *.egg-info
-*.so
 
 # Virtual environments
 .venv
 env/
 venv/
 ENV/
-
-# Rust generated files
-target/
 
 # IDE / Editor
 .vscode/
@@ -33,13 +28,21 @@ dmypy.json
 .coverage
 htmlcov/
 coverage.xml
-tmp_anyserve/
 
 # Logs and temp
 *.log
-tmp_distributed/
-tmp_mvp/
+tmp_*/
 
-# Generated gRPC stubs
+# C++ build artifacts
+cpp/build/
+cpp/CMakeUserPresets.json
+
+# Python C++ extension (compiled)
+python/anyserve/_core*.so
+python/anyserve/_core*.dylib
+
+# Generated gRPC stubs (keep proto/ generated files tracked separately)
 *_pb2.py
 *_pb2_grpc.py
+!anyserve_worker/proto/*_pb2.py
+!anyserve_worker/proto/*_pb2_grpc.py

@@ -2,7 +2,11 @@ import os
 import uuid
 import random
 from typing import Optional
-from anyserve._core import AnyserveCore
+
+try:
+    from anyserve._core import AnyserveCore
+except ImportError:
+    from ._core import AnyserveCore
 
 _global_core: Optional[AnyserveCore] = None
 

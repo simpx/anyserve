@@ -2,8 +2,13 @@ import random
 import functools
 import pickle
 from typing import Callable, Any as PyAny, List, Optional
-from anyserve.core import get_core, init as core_init
-from anyserve.objects import Any
+
+try:
+    from anyserve.core import get_core, init as core_init
+    from anyserve.objects import Any
+except ImportError:
+    from .core import get_core, init as core_init
+    from .objects import Any
 
 # Global registry for local capability handlers
 _local_capabilities = {}
