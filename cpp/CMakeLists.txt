@@ -60,15 +60,16 @@ endif()
 
 # Core library (static, used by both executable and Python extension)
 add_library(anyserve_core_lib STATIC
-    src/shm_manager.cpp
-    src/process_supervisor.cpp
-    src/anyserve_core.cpp
+    core/shm_manager.cpp
+    server/process_supervisor.cpp
+    server/anyserve_core.cpp
     ${GRPC_PREDICT_PB_SRC}
     ${GRPC_PREDICT_GRPC_SRC}
 )
 
 target_include_directories(anyserve_core_lib PUBLIC
-    src
+    core
+    server
     ${GENERATED_DIR}
 )
 
@@ -81,7 +82,7 @@ target_link_libraries(anyserve_core_lib PUBLIC
 
 # Standalone executable
 add_executable(anyserve_node
-    src/main.cpp
+    server/main.cpp
 )
 
 target_link_libraries(anyserve_node PRIVATE
@@ -91,7 +92,7 @@ target_link_libraries(anyserve_node PRIVATE
 # Python extension (pybind11)
 if(BUILD_PYTHON_EXTENSION)
     pybind11_add_module(_core
-        src/python_bindings.cpp
+        extension/python_bindings.cpp
     )
     
     target_link_libraries(_core PRIVATE

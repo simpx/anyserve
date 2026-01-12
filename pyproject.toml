@@ -25,13 +25,17 @@ build-backend = "scikit_build_core.build"
 [tool.scikit-build]
 cmake.source-dir = "cpp"
 cmake.build-type = "Release"
-cmake.args = ["-DBUILD_PYTHON_EXTENSION=ON"]
+cmake.args = [
+    "-DBUILD_PYTHON_EXTENSION=ON",
+    "-DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake",
+    "-DREGENERATE_PROTO=OFF"
+]
 wheel.install-dir = "python/anyserve"
-wheel.packages = ["python/anyserve", "anyserve_scheduler", "anyserve_worker"]
+wheel.packages = ["python/anyserve"]
 
 [tool.setuptools.packages.find]
-where = ["."]
-include = ["anyserve_scheduler*", "anyserve_worker*", "python*"]
+where = ["python"]
+include = ["anyserve*"]
 
 [dependency-groups]
 dev = [

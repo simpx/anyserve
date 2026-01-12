@@ -8,7 +8,7 @@
 #include <pybind11/stl.h>
 #include <pybind11/functional.h>
 
-#include "anyserve_core.hpp"
+#include "../server/anyserve_core.hpp"
 
 namespace py = pybind11;
 

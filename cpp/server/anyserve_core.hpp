@@ -10,7 +10,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
-#include "shm_manager.hpp"
+#include "../core/shm_manager.hpp"
 #include "process_supervisor.hpp"
 
 // Forward declarations for gRPC types

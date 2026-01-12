@@ -1,5 +1,8 @@
 # Justfile for anyserve POC
 
+# Default Python path for development
+export PYTHONPATH := "python:$PYTHONPATH"
+
 # List available commands
 default:
     @just --list
@@ -48,7 +51,7 @@ run-node target: build-node
 
 # Test C++ core
 test-cpp:
-    python3 examples/test_cpp_core.py
+    PYTHONPATH="python:$PYTHONPATH" python3 tests/python/test_cpp_core.py
 
 # Clean build artifacts
 clean:
@@ -57,7 +60,7 @@ clean:
 
 # Run tests
 test:
-    uv run pytest
+    PYTHONPATH="python" uv run pytest tests/
 
 # Generate proto files (Python)
 gen-proto:
