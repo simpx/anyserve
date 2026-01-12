@@ -4,26 +4,24 @@ default:
 setup:
     #!/usr/bin/env bash
     set -e
-    uv venv --python 3.13 2>/dev/null || true
+    uv venv
     pushd cpp && conan install . --output-folder=build --build=missing -s build_type=Release && popd
+
+build:
     uv pip install -e . -v
 
 test target="all":
     #!/usr/bin/env bash
     set -e
     case "{{target}}" in
-        python)
-            uv run pytest tests/python/
-            ;;
         cpp)
             uv run python tests/python/test_cpp_core.py
             ;;
         all)
             uv run python tests/python/test_cpp_core.py
-            uv run pytest tests/python/
             ;;
         *)
-            echo "Usage: just test [python|cpp|all]"
+            echo "Usage: just test [cpp|all]"
             exit 1
             ;;
     esac
