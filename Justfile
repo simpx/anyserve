@@ -26,7 +26,7 @@ build:
     sed -i '' 's/^import grpc_predict_v2_pb2/from . import grpc_predict_v2_pb2/' python/anyserve/worker/proto/grpc_predict_v2_pb2_grpc.py
     sed -i '' 's/^import worker_management_pb2/from . import worker_management_pb2/' python/anyserve/worker/proto/worker_management_pb2_grpc.py
     touch python/anyserve/worker/proto/__init__.py
-    # Build C++ Ingress
+    # Build C++ Dispatcher
     cd cpp/build
     rm -f CMakeCache.txt
     cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=conan_toolchain.cmake

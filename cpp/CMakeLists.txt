@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 option(BUILD_PYTHON_EXTENSION "Build pybind11 Python extension" ON)
-option(BUILD_INGRESS "Build new Ingress-based server" ON)
+option(BUILD_INGRESS "Build new Dispatcher-based server" ON)
 
 find_package(gRPC CONFIG REQUIRED)
 find_package(Protobuf CONFIG REQUIRED)
@@ -97,26 +97,26 @@ target_link_libraries(anyserve_core_lib PUBLIC
 )
 
 # ============================================================================
-# Ingress Library (NEW)
+# Dispatcher Library (NEW)
 # ============================================================================
 
 if(BUILD_INGRESS)
-    add_library(anyserve_ingress_lib STATIC
+    add_library(anyserve_dispatcher_lib STATIC
         server/model_registry.cpp
         server/worker_client.cpp
-        server/anyserve_ingress.cpp
+        server/anyserve_dispatcher.cpp
         ${GRPC_PREDICT_PB_SRC}
         ${GRPC_PREDICT_GRPC_SRC}
         ${WORKER_MGMT_PB_SRC}
         ${WORKER_MGMT_GRPC_SRC}
     )
 
-    target_include_directories(anyserve_ingress_lib PUBLIC
+    target_include_directories(anyserve_dispatcher_lib PUBLIC
         server
         ${GENERATED_DIR}
     )
 
-    target_link_libraries(anyserve_ingress_lib PUBLIC
+    target_link_libraries(anyserve_dispatcher_lib PUBLIC
         gRPC::grpc++
         gRPC::grpc++_reflection
         protobuf::libprotobuf
@@ -136,18 +136,18 @@ target_link_libraries(anyserve_node PRIVATE
     anyserve_core_lib
 )
 
-# Ingress node (new architecture)
+# Dispatcher node (new architecture)
 if(BUILD_INGRESS)
-    add_executable(anyserve_ingress
+    add_executable(anyserve_dispatcher
         server/main_v2.cpp
     )
 
-    target_link_libraries(anyserve_ingress PRIVATE
-        anyserve_ingress_lib
+    target_link_libraries(anyserve_dispatcher PRIVATE
+        anyserve_dispatcher_lib
     )
 
     # Install
-    install(TARGETS anyserve_ingress RUNTIME DESTINATION bin)
+    install(TARGETS anyserve_dispatcher RUNTIME DESTINATION bin)
 endif()
 
 # ============================================================================

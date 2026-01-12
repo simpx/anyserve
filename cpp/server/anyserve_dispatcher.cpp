@@ -1,4 +1,4 @@
-#include "anyserve_ingress.hpp"
+#include "anyserve_dispatcher.hpp"
 
 #include <iostream>
 #include <fstream>
@@ -16,7 +16,7 @@ namespace anyserve {
 
 class KServeServiceImpl final : public inference::GRPCInferenceService::Service {
 public:
-    explicit KServeServiceImpl(AnyserveIngress* ingress) : ingress_(ingress) {}
+    explicit KServeServiceImpl(AnyserveDispatcher* ingress) : ingress_(ingress) {}
 
     grpc::Status ServerLive(
         grpc::ServerContext* context,
@@ -156,7 +156,7 @@ public:
     }
 
 private:
-    AnyserveIngress* ingress_;
+    AnyserveDispatcher* ingress_;
 };
 
 // ============================================================================
@@ -165,7 +165,7 @@ private:
 
 class WorkerManagementServiceImpl final : public anyserve::WorkerManagement::Service {
 public:
-    explicit WorkerManagementServiceImpl(AnyserveIngress* ingress) : ingress_(ingress) {}
+    explicit WorkerManagementServiceImpl(AnyserveDispatcher* ingress) : ingress_(ingress) {}
 
     grpc::Status RegisterModel(
         grpc::ServerContext* context,
@@ -224,33 +224,33 @@ public:
     }
 
 private:
-    AnyserveIngress* ingress_;
+    AnyserveDispatcher* ingress_;
 };
 
 // ============================================================================
-// AnyserveIngress Implementation
+// AnyserveDispatcher Implementation
 // ============================================================================
 
-AnyserveIngress::AnyserveIngress(int port, int management_port)
+AnyserveDispatcher::AnyserveDispatcher(int port, int management_port)
     : port_(port), management_port_(management_port) {
 
-    std::cout << "[AnyserveIngress] Initialized" << std::endl;
-    std::cout << "[AnyserveIngress] KServe port: " << port_ << std::endl;
-    std::cout << "[AnyserveIngress] Management port: " << management_port_ << std::endl;
+    std::cout << "[AnyserveDispatcher] Initialized" << std::endl;
+    std::cout << "[AnyserveDispatcher] KServe port: " << port_ << std::endl;
+    std::cout << "[AnyserveDispatcher] Management port: " << management_port_ << std::endl;
 }
 
-AnyserveIngress::~AnyserveIngress() {
+AnyserveDispatcher::~AnyserveDispatcher() {
     stop();
 }
 
-void AnyserveIngress::run() {
+void AnyserveDispatcher::run() {
     running_.store(true);
 
     // 启动 KServe 服务器（独立线程）
-    server_thread_ = std::thread(&AnyserveIngress::run_server, this);
+    server_thread_ = std::thread(&AnyserveDispatcher::run_server, this);
 
     // 启动 Worker 管理服务器（独立线程）
-    management_thread_ = std::thread(&AnyserveIngress::run_management_server, this);
+    management_thread_ = std::thread(&AnyserveDispatcher::run_management_server, this);
 
     // 等待线程
     if (server_thread_.joinable()) {
@@ -261,9 +261,9 @@ void AnyserveIngress::run() {
     }
 }
 
-void AnyserveIngress::stop() {
+void AnyserveDispatcher::stop() {
     if (running_.exchange(false)) {
-        std::cout << "[AnyserveIngress] Stopping..." << std::endl;
+        std::cout << "[AnyserveDispatcher] Stopping..." << std::endl;
 
         if (server_) {
             server_->Shutdown();
@@ -274,7 +274,7 @@ void AnyserveIngress::stop() {
     }
 }
 
-void AnyserveIngress::run_server() {
+void AnyserveDispatcher::run_server() {
     KServeServiceImpl service(this);
 
     std::string server_address = "0.0.0.0:" + std::to_string(port_);
@@ -285,14 +285,14 @@ void AnyserveIngress::run_server() {
 
     server_ = builder.BuildAndStart();
 
-    std::cout << "[AnyserveIngress] KServe gRPC server listening on " << server_address << std::endl;
+    std::cout << "[AnyserveDispatcher] KServe gRPC server listening on " << server_address << std::endl;
 
     if (server_) {
         server_->Wait();
     }
 }
 
-void AnyserveIngress::run_management_server() {
+void AnyserveDispatcher::run_management_server() {
     WorkerManagementServiceImpl service(this);
 
     std::string server_address = "0.0.0.0:" + std::to_string(management_port_);
@@ -303,7 +303,7 @@ void AnyserveIngress::run_management_server() {
 
     management_server_ = builder.BuildAndStart();
 
-    std::cout << "[AnyserveIngress] Worker Management server listening on " << server_address << std::endl;
+    std::cout << "[AnyserveDispatcher] Worker Management server listening on " << server_address << std::endl;
 
     if (management_server_) {
         management_server_->Wait();

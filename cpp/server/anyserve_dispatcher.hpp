@@ -17,7 +17,7 @@ class ServerCompletionQueue;
 namespace anyserve {
 
 /**
- * AnyserveIngress - C++ Ingress 主类
+ * AnyserveDispatcher - C++ Dispatcher 主类
  *
  * 核心职责：
  * 1. 接收外部 KServe v2 gRPC 请求
@@ -25,7 +25,7 @@ namespace anyserve {
  * 3. 提供 Worker 注册/注销 API
  * 4. Model 不存在时直接返回错误（无需 Python）
  */
-class AnyserveIngress {
+class AnyserveDispatcher {
 public:
     /**
      * 构造函数
@@ -33,21 +33,21 @@ public:
      * @param port gRPC 服务端口（KServe v2）
      * @param management_port Worker 管理端口
      */
-    AnyserveIngress(int port, int management_port);
+    AnyserveDispatcher(int port, int management_port);
 
-    ~AnyserveIngress();
+    ~AnyserveDispatcher();
 
     // 禁止拷贝
-    AnyserveIngress(const AnyserveIngress&) = delete;
-    AnyserveIngress& operator=(const AnyserveIngress&) = delete;
+    AnyserveDispatcher(const AnyserveDispatcher&) = delete;
+    AnyserveDispatcher& operator=(const AnyserveDispatcher&) = delete;
 
     /**
-     * 启动 Ingress（阻塞）
+     * 启动 Dispatcher（阻塞）
      */
     void run();
 
     /**
-     * 停止 Ingress
+     * 停止 Dispatcher
      */
     void stop();
 

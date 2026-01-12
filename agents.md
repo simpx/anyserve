@@ -4,7 +4,7 @@
 
 ## 1. Project Overview
 
-**AnyServe** is a high-performance model serving framework with a **C++ Ingress + Python Worker** architecture, supporting the KServe v2 inference protocol.
+**AnyServe** is a high-performance model serving framework with a **C++ Dispatcher + Python Worker** architecture, supporting the KServe v2 inference protocol.
 
 **Core Principles:**
 - **Performance First**: C++ handles all request routing and traffic management
@@ -14,7 +14,7 @@
 
 ## 2. Architecture & Components
 
-### 2.1 C++ Ingress (Request Router)
+### 2.1 C++ Dispatcher (Request Router)
 > Location: `cpp/server/`
 
 **Responsibilities:**
@@ -25,7 +25,7 @@
 - **Unix Socket Client**: High-speed IPC with worker processes
 
 **Key Files:**
-- `anyserve_ingress.{cpp,hpp}` - Main ingress server with gRPC services
+- `anyserve_dispatcher.{cpp,hpp}` - Main ingress server with gRPC services
 - `model_registry.{cpp,hpp}` - Thread-safe model routing table
 - `worker_client.{cpp,hpp}` - Unix socket communication with workers
 - `main_v2.cpp` - Standalone executable entry point
@@ -96,7 +96,7 @@ def my_handler(request: ModelInferRequest) -> ModelInferResponse:
 ```
 
 **Modifying C++ Routing Logic:**
-1. Edit `cpp/server/anyserve_ingress.cpp`
+1. Edit `cpp/server/anyserve_dispatcher.cpp`
 2. Run `just build` to compile
 3. Restart server to use new binary
 
@@ -130,7 +130,7 @@ def my_handler(request: ModelInferRequest) -> ModelInferResponse:
 ## 5. Current Implementation Status
 
 ### ✅ Completed Features
-- C++ Ingress with gRPC server (KServe v2 protocol)
+- C++ Dispatcher with gRPC server (KServe v2 protocol)
 - Model registry with thread-safe lookups
 - Unix Domain Socket IPC between Ingress and Workers
 - Python Worker with model registration
@@ -177,7 +177,7 @@ python examples/basic/run_example.py
 
 ### Justfile Commands
 - `just setup` - Install Conan dependencies for C++
-- `just build` - Compile C++ Ingress binary
+- `just build` - Compile C++ Dispatcher binary
 - `just clean` - Remove build artifacts
 - `just test` - Run tests (coming soon)
 
@@ -194,9 +194,9 @@ cd cpp/build && cmake .. && cmake --build .
 
 ```
 anyserve/
-├── cpp/                           # C++ Ingress implementation
+├── cpp/                           # C++ Dispatcher implementation
 │   ├── server/
-│   │   ├── anyserve_ingress.{cpp,hpp}    # Main gRPC server
+│   │   ├── anyserve_dispatcher.{cpp,hpp}    # Main gRPC server
 │   │   ├── model_registry.{cpp,hpp}       # Model routing table
 │   │   ├── worker_client.{cpp,hpp}        # Unix socket client
 │   │   └── main_v2.cpp                    # Standalone entry point
@@ -234,7 +234,7 @@ anyserve/
 ### C++ Debugging
 - Build with debug symbols: `cmake -DCMAKE_BUILD_TYPE=Debug`
 - Add logging: Use `std::cerr` (goes to stderr)
-- Check process: `ps aux | grep anyserve_ingress`
+- Check process: `ps aux | grep anyserve_dispatcher`
 - Check ports: `lsof -i :8000`
 
 ### Python Debugging
@@ -260,7 +260,7 @@ anyserve/
 
 ## 10. Key Design Decisions
 
-### Why C++ Ingress?
+### Why C++ Dispatcher?
 - High-performance gRPC handling
 - Efficient request routing without GIL
 - Native thread support for concurrent requests

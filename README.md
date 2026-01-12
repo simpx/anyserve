@@ -1,6 +1,6 @@
 # AnyServe
 
-High-performance model serving framework with C++ Ingress and Python Worker architecture, supporting the KServe v2 inference protocol.
+High-performance model serving framework with C++ Dispatcher and Python Worker architecture, supporting the KServe v2 inference protocol.
 
 ## Features
 
@@ -16,7 +16,7 @@ High-performance model serving framework with C++ Ingress and Python Worker arch
 ```
 External Clients (gRPC)
         ↓
-   C++ Ingress (Port 8000)
+   C++ Dispatcher (Port 8000)
    ├─ Model Registry
    ├─ Request Router
    └─ Worker Client
@@ -25,8 +25,8 @@ External Clients (gRPC)
    └─ Model Handlers (@model decorator)
 ```
 
-AnyServe uses a **C++ Ingress + Python Worker** architecture:
-- **C++ Ingress**: Handles all external gRPC traffic, routes requests to appropriate workers
+AnyServe uses a **C++ Dispatcher + Python Worker** architecture:
+- **C++ Dispatcher**: Handles all external gRPC traffic, routes requests to appropriate workers
 - **Python Workers**: Independent processes running your model inference code
 - **Communication**: gRPC for management, Unix Domain Sockets for high-speed inference
 
@@ -137,7 +137,7 @@ print(f"Response: {response}")
 
 ```
 anyserve/
-├── cpp/                    # C++ Ingress implementation
+├── cpp/                    # C++ Dispatcher implementation
 │   ├── server/            # Core server components
 │   │   ├── anyserve_ingress.{cpp,hpp}   # Main ingress server
 │   │   ├── model_registry.{cpp,hpp}      # Model registry
@@ -198,7 +198,7 @@ This project uses AI-assisted development. See [agents.md](agents.md) for collab
 ## Status
 
 ✅ **Core Features Complete**
-- C++ Ingress server with gRPC and Unix Socket support
+- C++ Dispatcher server with gRPC and Unix Socket support
 - Python Worker with KServe v2 protocol
 - Dynamic model registration
 - Multi-model serving with versioning

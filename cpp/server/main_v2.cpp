@@ -1,7 +1,7 @@
 /**
- * main_v2.cpp - AnyServe Ingress 独立可执行文件
+ * main_v2.cpp - AnyServe Dispatcher 独立可执行文件
  *
- * 新架构：C++ Ingress 作为独立主进程
+ * 新架构：C++ Dispatcher 作为独立主进程
  *
  * 用法：
  *   anyserve_node --port 8000 --management-port 9000
@@ -18,12 +18,12 @@
 #include <csignal>
 #include <atomic>
 
-#include "anyserve_ingress.hpp"
+#include "anyserve_dispatcher.hpp"
 
 namespace {
 
 std::atomic<bool> g_shutdown_requested{false};
-anyserve::AnyserveIngress* g_ingress = nullptr;
+anyserve::AnyserveDispatcher* g_ingress = nullptr;
 
 void signal_handler(int signal) {
     std::cout << "\n[Main] Received signal " << signal << ", shutting down..." << std::endl;
@@ -76,24 +76,24 @@ int main(int argc, char** argv) {
 
     try {
         std::cout << "============================================" << std::endl;
-        std::cout << "  AnyServe Ingress v0.2.0" << std::endl;
+        std::cout << "  AnyServe Dispatcher v0.2.0" << std::endl;
         std::cout << "============================================" << std::endl;
         std::cout << std::endl;
 
-        // 创建 Ingress
-        anyserve::AnyserveIngress ingress(port, management_port);
+        // 创建 Dispatcher
+        anyserve::AnyserveDispatcher ingress(port, management_port);
         g_ingress = &ingress;
 
-        std::cout << "[Main] Starting Ingress..." << std::endl;
+        std::cout << "[Main] Starting Dispatcher..." << std::endl;
         std::cout << "[Main] KServe gRPC: 0.0.0.0:" << port << std::endl;
         std::cout << "[Main] Management:  0.0.0.0:" << management_port << std::endl;
         std::cout << "[Main] Press Ctrl+C to stop" << std::endl;
         std::cout << std::endl;
 
-        // 运行 Ingress（阻塞）
+        // 运行 Dispatcher（阻塞）
         ingress.run();
 
-        std::cout << "[Main] Ingress stopped" << std::endl;
+        std::cout << "[Main] Dispatcher stopped" << std::endl;
         return 0;
 
     } catch (const std::exception& e) {

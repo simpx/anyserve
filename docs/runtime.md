@@ -1,295 +1,432 @@
 # AnyServe Runtime Architecture
 
-> **Runtime Implementation Guide** - This document describes the runtime architecture
-> and internal implementation details. For the overall system design, see [architecture.md](architecture.md).
+> This document describes the runtime architecture and design decisions of AnyServe.
 
-## 🎯 Design Principles
+## Overview
 
-1. **C++ Ingress**: Standalone main process handling all external requests
-2. **Python Worker**: Independent subprocess for model inference logic
-3. **Dynamic Registration**: Workers register models with Ingress on startup
-4. **Zero Python Dependency**: Ingress can handle all non-inference requests independently
+AnyServe uses a **C++ Dispatcher + Python Worker** architecture where:
+- **C++ Dispatcher** is the main process handling all external gRPC traffic
+- **Python Workers** are subprocesses that execute model inference logic
+- Communication happens via Unix Domain Sockets for high-performance IPC
 
-## 📐 架构图
+## Current Runtime Architecture
+
+### System Components
 
 ```
-                    ┌─────────────────────────────────────┐
-                    │     External gRPC Clients           │
-                    │   (KServe v2 ModelInferRequest)     │
-                    └───────────────┬─────────────────────┘
-                                    │
-                        ┌───────────▼───────────┐
-                        │   C++ Ingress Process │
-                        │   Port: 8000 (gRPC)   │
-                        │                       │
-                        │  ┌─────────────────┐ │
-                        │  │ Model Registry  │ │
-                        │  │ ┌─────────────┐ │ │
-                        │  │ │ add → w1    │ │ │
-                        │  │ │ echo → w1   │ │ │
-                        │  │ │ cls:v1 → w2 │ │ │
-                        │  │ └─────────────┘ │ │
-                        │  └─────────────────┘ │
-                        │                       │
-                        │  ┌─────────────────┐ │
-                        │  │ gRPC Router     │ │
-                        │  │ - ModelInfer    │ │
-                        │  │ - ServerLive    │ │
-                        │  │ - ModelReady    │ │
-                        │  └─────────────────┘ │
-                        │                       │
-                        │  ┌─────────────────┐ │
-                        │  │ Management API  │ │
-                        │  │ - RegisterModel │ │
-                        │  │ - Heartbeat     │ │
-                        │  └─────────────────┘ │
-                        └───┬───────────┬───────┘
-                            │           │
-                  ┌─────────▼──┐   ┌───▼──────────┐
-                  │  Worker 1  │   │  Worker 2    │
-                  │  (Python)  │   │  (Python)    │
-                  │            │   │              │
-                  │  @model()  │   │  @model()    │
-                  │  - add     │   │  - cls:v1    │
-                  │  - echo    │   │  - cls:v2    │
-                  └────────────┘   └──────────────┘
-                  Unix Socket      Unix Socket
-                  /tmp/w1.sock     /tmp/w2.sock
+┌─────────────────────────────────────┐
+│     External gRPC Clients           │
+│   (KServe v2 Protocol, Port 8000)   │
+└───────────────┬─────────────────────┘
+                │
+    ┌───────────▼──────────────────────────────┐
+    │      C++ Dispatcher (Main Process)          │
+    │                                           │
+    │  ┌────────────────────────────────────┐  │
+    │  │      Model Registry                │  │
+    │  │  (model name → worker address)     │  │
+    │  │  - echo → /tmp/worker-1.sock       │  │
+    │  │  - add → /tmp/worker-1.sock        │  │
+    │  │  - classifier:v1 → /tmp/worker-2.sock│ │
+    │  └────────────────────────────────────┘  │
+    │                                           │
+    │  ┌────────────────────────────────────┐  │
+    │  │    KServe v2 gRPC Services         │  │
+    │  │  - ModelInfer (request routing)    │  │
+    │  │  - ServerLive / ServerReady        │  │
+    │  │  - ModelReady                      │  │
+    │  └────────────────────────────────────┘  │
+    │                                           │
+    │  ┌────────────────────────────────────┐  │
+    │  │   Worker Management (Port 9000)    │  │
+    │  │  - RegisterModel (from workers)    │  │
+    │  │  - Heartbeat                       │  │
+    │  └────────────────────────────────────┘  │
+    └───────────┬─────────────┬─────────────────┘
+                │             │
+    ┌───────────▼──────┐  ┌───▼──────────────┐
+    │  Python Worker 1 │  │  Python Worker 2 │
+    │  @model("echo")  │  │  @model("cls:v1")│
+    │  @model("add")   │  │  @model("cls:v2")│
+    └──────────────────┘  └──────────────────┘
+    Unix Socket           Unix Socket
+    /tmp/worker-1.sock    /tmp/worker-2.sock
 ```
 
-## 🔄 启动流程
+### Request Flow
 
-### 1. 启动 C++ Ingress
+#### 1. Model Inference Request (Model Exists)
+```
+Client → C++ Dispatcher (port 8000)
+         ↓ Lookup model in registry
+         ↓ Found: echo → /tmp/worker-1.sock
+         ↓ Forward request via Unix Socket
+         ↓
+      Python Worker
+         ↓ Deserialize protobuf
+         ↓ Execute handler: echo_model(request)
+         ↓ Serialize response
+         ↓
+      C++ Dispatcher
+         ↓ Forward response to client
+         ↓
+Client ← Response
+```
+
+#### 2. Model Not Found (Fast Rejection)
+```
+Client → C++ Dispatcher
+         ↓ Lookup model in registry
+         ↓ Not Found
+         ↓ Return gRPC NOT_FOUND immediately
+         ↓ (No Python involvement)
+Client ← Error (NOT_FOUND)
+```
+
+#### 3. Server Health Check
+```
+Client → C++ Dispatcher: ServerLive
+         ↓ Check Dispatcher health
+         ↓ Return {live: true}
+         ↓ (No Python involvement)
+Client ← Response
+```
+
+### Key Components
+
+#### C++ Dispatcher
+
+**Responsibilities:**
+- Accept all external gRPC requests (KServe v2 protocol)
+- Maintain thread-safe model registry
+- Route inference requests to appropriate workers
+- Handle worker registration and health checks
+- Fast-fail on model not found
+
+**Core Classes:**
+- `AnyServeDispatcher` - Main gRPC server implementing KServe v2 services
+- `ModelRegistry` - Thread-safe mapping: model_key → worker_address
+- `WorkerClient` - Unix socket client for worker communication
+
+**File Locations:**
+- `cpp/server/anyserve_dispatcher.{cpp,hpp}` - Main ingress implementation
+- `cpp/server/model_registry.{cpp,hpp}` - Model routing table
+- `cpp/server/worker_client.{cpp,hpp}` - Worker IPC client
+- `cpp/server/main_v2.cpp` - Standalone executable entry point
+
+#### Python Worker
+
+**Responsibilities:**
+- Execute model inference logic
+- Register models with ingress on startup
+- Listen for inference requests via Unix socket
+- Handle KServe v2 request/response serialization
+
+**Core Classes:**
+- `AnyServe` - Application class with @model decorator
+- `Worker` - Worker process managing socket server and model handlers
+
+**File Locations:**
+- `python/anyserve/__init__.py` - Public API
+- `python/anyserve/worker/__main__.py` - Worker process implementation
+- `python/anyserve/kserve.py` - KServe v2 protocol implementation
+
+## Why C++ Dispatcher Instead of Python + C++ Extension?
+
+### Design Decision: C++ as Main Process
+
+The architecture intentionally uses **C++ as the main process** rather than Python with C++ extensions. This is a critical design decision for several reasons:
+
+#### 1. Advanced Traffic Management (Current & Future)
+
+The ingress needs to handle complex request routing logic:
+- **Request queuing**: Buffer requests during worker overload
+- **Retry logic**: Automatically retry failed requests
+- **Fallback routing**: Route to backup workers or models
+- **Load balancing**: Distribute requests across multiple workers
+- **Circuit breaking**: Detect and isolate failing workers
+
+These operations require low-latency, high-throughput handling that's best implemented in C++. Doing this in Python would introduce significant overhead and complexity.
+
+#### 2. Dynamic Worker Management
+
+The system needs to support:
+- **Worker registration**: Workers can join/leave at runtime
+- **Worker discovery**: Automatically detect available workers
+- **Health monitoring**: Track worker health and remove dead workers
+- **Resource scaling**: Add/remove workers based on load
+
+C++ provides better control over process lifecycle, socket management, and concurrent operations needed for these features.
+
+#### 3. Zero-Python Dependency for Core Operations
+
+Many operations don't need Python at all:
+- Model not found → return 404 immediately
+- Server health checks → respond without Python
+- Request routing → look up registry and forward
+
+With C++ as the main process, these operations are handled natively without crossing language boundaries.
+
+#### 4. Performance Characteristics
+
+**C++ Dispatcher + Python Worker:**
+- One language boundary crossing per inference request
+- No GIL contention for routing logic
+- Native thread support for concurrent request handling
+- Minimal serialization overhead (direct protobuf handling)
+
+**Python Main + C++ Extension (Alternative):**
+- Multiple language boundary crossings (Python → C++ → Python)
+- GIL limitations for request routing
+- Complex state management across languages
+- Higher serialization overhead
+
+#### 5. Operational Robustness
+
+- **Isolation**: Worker crashes don't affect the ingress
+- **Restart**: Workers can restart without downtime
+- **Upgrades**: Update worker code without restarting ingress
+- **Debugging**: Simpler to debug and profile separate processes
+
+### Architecture Comparison
+
+| Aspect | C++ Dispatcher (Current) | Python Main + C++ Ext (Alternative) |
+|--------|----------------------|-------------------------------------|
+| Main Process | C++ | Python |
+| Request Entry | C++ gRPC | Python gRPC → C++ |
+| Model Registry | C++ (thread-safe) | Python (GIL) |
+| Routing Logic | C++ | Python |
+| Worker Communication | C++ → Unix Socket → Python | Python → C++ → Python |
+| Performance | High (one boundary) | Medium (multiple boundaries) |
+| Scalability | Excellent (no GIL) | Limited (GIL contention) |
+| Advanced Features | Native support | Complex to implement |
+| Worker Isolation | Strong | Weak |
+
+## Protocol: Worker Registration
+
+### Startup Sequence
+
+```
+1. C++ Dispatcher starts
+   - Start gRPC server on port 8000
+   - Start management server on port 9000
+   - Initialize empty model registry
+
+2. Python Worker starts
+   - Load all @model decorated functions
+   - Start Unix socket server (e.g., /tmp/worker-abc123.sock)
+   - Connect to ingress management port (9000)
+   - For each model:
+       → Send RegisterModel(model_name, version, worker_address)
+       → Dispatcher updates registry
+   - Wait for inference requests
+
+3. Client sends inference request
+   - C++ Dispatcher receives ModelInferRequest
+   - Lookup model in registry
+   - Forward to worker via Unix socket
+   - Return response to client
+```
+
+### Worker Registration Protocol
+
+```protobuf
+// proto/worker_management.proto
+service WorkerManagement {
+    rpc RegisterModel(RegisterModelRequest) returns (RegisterModelResponse);
+    rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+}
+
+message RegisterModelRequest {
+    string model_name = 1;
+    string model_version = 2;
+    string worker_address = 3;  // e.g., "unix:///tmp/worker-123.sock"
+    string worker_id = 4;
+}
+```
+
+## Communication: Unix Domain Sockets
+
+### Why Unix Sockets?
+
+- **High Performance**: Faster than TCP for local IPC (no network stack overhead)
+- **Zero Network Latency**: Direct kernel-level communication
+- **Simple**: Point-to-point connection model
+- **Secure**: Filesystem permissions control access
+
+### Socket Protocol
+
+**Request Format (Dispatcher → Worker):**
+```
+[4 bytes: message length] [N bytes: protobuf ModelInferRequest]
+```
+
+**Response Format (Worker → Dispatcher):**
+```
+[4 bytes: message length] [N bytes: protobuf ModelInferResponse]
+```
+
+### Connection Lifecycle
+
+Currently, the system uses **single-use connections**:
+1. Dispatcher receives request
+2. Dispatcher connects to worker socket
+3. Send request, receive response
+4. Close connection
+
+**Future Optimization:** Connection pooling for better performance (see Roadmap).
+
+## Future Roadmap
+
+### 1. Zero-Copy Communication (C++ ↔ Python)
+
+**Current State:**
+- Protobuf serialization/deserialization at language boundary
+- Memory copy overhead for tensor data
+
+**Future Goal:**
+- Share memory directly between C++ and Python
+- Use shared memory segments for tensor data
+- Pass pointers instead of copying data
+- Minimal serialization (only metadata)
+
+**Benefits:**
+- Eliminate memory copy overhead
+- Reduce latency for large tensors
+- Lower memory footprint
+- Higher throughput
+
+**Implementation Approach:**
+- Use `mmap` or shared memory for tensor buffers
+- Pass file descriptors via Unix socket ancillary data
+- Use Apache Arrow or similar zero-copy format
+- Python side: numpy arrays backed by shared memory
+
+### 2. Advanced Request Management
+
+**Request Queuing:**
+- Per-model request queues with configurable depth
+- Priority-based queue management
+- Backpressure handling
+
+**Retry & Fallback:**
+- Automatic retry on worker failure
+- Fallback to alternative workers or models
+- Exponential backoff strategies
+
+**Circuit Breaking:**
+- Detect failing workers and stop routing to them
+- Automatic recovery detection
+- Health-based routing decisions
+
+### 3. Connection Pooling
+
+**Current:** Single-use Unix socket connections
+**Future:** Connection pool per worker
+- Reuse connections for multiple requests
+- Configurable pool size
+- Connection health monitoring
+- Automatic connection recycling
+
+### 4. Dynamic Worker Management
+
+**Worker Discovery:**
+- Automatic detection of new workers
+- Service discovery integration (Consul, etcd)
+- DNS-based worker resolution
+
+**Auto-scaling:**
+- Monitor request queue depth and latency
+- Automatically spawn/kill workers
+- Load-based scaling policies
+- Resource-aware scheduling
+
+**Worker Health:**
+- Continuous health monitoring
+- Automatic removal of dead workers
+- Graceful worker shutdown
+- Zero-downtime worker updates
+
+### 5. Distributed Deployment
+
+**Multi-node Support:**
+- Dispatcher can forward to remote workers (TCP/gRPC)
+- Worker pool spanning multiple machines
+- Location-aware routing
+
+**High Availability:**
+- Multiple ingress instances with load balancing
+- Worker redundancy and failover
+- Shared model registry (Redis, etcd)
+
+### 6. Observability
+
+**Metrics:**
+- Request latency histograms (p50, p95, p99)
+- Worker utilization and queue depth
+- Model-level throughput and error rates
+- Resource usage (CPU, memory, GPU)
+
+**Tracing:**
+- Distributed tracing support (OpenTelemetry)
+- Request flow visualization
+- Performance bottleneck identification
+
+**Logging:**
+- Structured logging with correlation IDs
+- Centralized log aggregation
+- Debug mode with detailed protocol logs
+
+## Development Notes
+
+### Building the Project
 
 ```bash
-$ ./anyserve_node --port 8000 --management-port 9000
+# Setup dependencies
+just setup
+
+# Build C++ ingress and Python package (includes protobuf generation)
+just build
+
+# Clean all artifacts
+just clean
 ```
 
-**C++ 做什么**：
-- 启动 gRPC 服务器（端口 8000）用于接收 KServe 请求
-- 启动 gRPC 管理服务器（端口 9000）用于 Worker 注册
-- 初始化空的 Model Registry
-- 进入事件循环，等待请求
+### Generated Artifacts
 
-### 2. 启动 Python Worker
+The build process generates protobuf files in two locations:
+- `python/anyserve/_proto/` - Used by worker server (kserve.py, worker/__main__.py)
+- `python/anyserve/worker/proto/` - Used by gRPC client (worker/client.py)
 
-```bash
-$ PYTHONPATH=python python3 examples/kserve_server.py
-```
+Both are generated from the same proto files but serve different purposes in the codebase.
 
-**Python 做什么**：
-1. 加载所有 `@app.model()` 装饰的函数
-2. 启动本地 Unix Domain Socket 服务器（例如 `/tmp/worker-12345.sock`）
-3. 连接到 Ingress 的管理端口（9000）
-4. 通过 `RegisterModel` RPC 注册每个模型
-5. 等待 Ingress 转发请求
+### Key Files
 
-## 🚀 请求流程
+**C++ Implementation:**
+- `cpp/server/main_v2.cpp` - Dispatcher entry point
+- `cpp/server/anyserve_dispatcher.{cpp,hpp}` - gRPC server implementation
+- `cpp/server/model_registry.{cpp,hpp}` - Model routing table
+- `cpp/server/worker_client.{cpp,hpp}` - Unix socket client
 
-### 场景 1: 模型存在
+**Python Implementation:**
+- `python/anyserve/cli.py` - CLI entry point for starting server
+- `python/anyserve/worker/__main__.py` - Worker process
+- `python/anyserve/kserve.py` - KServe v2 protocol implementation
+- `python/anyserve/worker/client.py` - gRPC client for testing
 
-```
-Client: ModelInferRequest(model_name="add")
-  ↓
-C++ Ingress (port 8000)
-  ↓ 查找 Model Registry
-  ↓ "add" → "unix:///tmp/worker-12345.sock" ✓
-  ↓ 通过 Unix Socket 转发请求
-  ↓
-Python Worker (unix socket)
-  ↓ 接收 protobuf bytes
-  ↓ 调用 add_model(request)
-  ↓ 返回 response bytes
-  ↓
-C++ Ingress
-  ↓ 转发响应
-  ↓
-Client: ModelInferResponse
-```
+**Protocol Definitions:**
+- `proto/grpc_predict_v2.proto` - KServe v2 inference protocol
+- `proto/worker_management.proto` - Worker registration protocol
 
-### 场景 2: 模型不存在
+## Design Philosophy
 
-```
-Client: ModelInferRequest(model_name="unknown")
-  ↓
-C++ Ingress
-  ↓ 查找 Model Registry
-  ↓ "unknown" → NOT_FOUND ✗
-  ↓ 直接返回 gRPC NOT_FOUND
-  ↓ (无需 Python 参与)
-Client: gRPC Error (NOT_FOUND)
-```
+1. **Separation of Concerns**: C++ handles routing, Python handles inference
+2. **Fail Fast**: Reject invalid requests at the ingress without Python
+3. **Isolation**: Worker failures don't affect the ingress or other workers
+4. **Performance**: Minimize cross-language overhead and memory copies
+5. **Scalability**: Support multiple workers and horizontal scaling
+6. **Future-Ready**: Architecture supports advanced features like zero-copy and distributed deployment
 
-### 场景 3: ServerLive / ServerReady
+---
 
-```
-Client: ServerLiveRequest
-  ↓
-C++ Ingress
-  ↓ 直接返回 {live: true}
-  ↓ (无需 Python)
-Client: ServerLiveResponse
-```
-
-## 🔧 关键组件
-
-### C++ 侧
-
-#### 1. ModelRegistry 类
-```cpp
-class ModelRegistry {
-public:
-    void register_model(const std::string& model_key,
-                       const std::string& worker_addr);
-
-    std::optional<std::string> lookup_worker(const std::string& model_key);
-
-    void unregister_worker(const std::string& worker_id);
-
-private:
-    std::mutex mutex_;
-    std::unordered_map<std::string, std::string> model_to_worker_;
-    // model_key (name:version) → worker_address
-};
-```
-
-#### 2. WorkerClient 类
-```cpp
-class WorkerClient {
-public:
-    ModelInferResponse forward_request(
-        const std::string& worker_addr,
-        const ModelInferRequest& request
-    );
-
-private:
-    std::unordered_map<std::string, std::unique_ptr<UnixSocketClient>> clients_;
-};
-```
-
-#### 3. AnyserveCore 重构
-```cpp
-class AnyserveCore {
-public:
-    // 不再需要 Python dispatcher！
-    // void set_dispatcher(...);  // ← 删除
-
-    // 新增：Model Registry
-    ModelRegistry& get_registry() { return registry_; }
-
-    // 新增：Worker Client
-    WorkerClient& get_worker_client() { return worker_client_; }
-
-private:
-    ModelRegistry registry_;
-    WorkerClient worker_client_;
-};
-```
-
-### Python 侧
-
-#### 1. Worker 类
-```python
-class Worker:
-    def __init__(self, ingress_address, socket_path):
-        self.ingress_address = ingress_address
-        self.socket_path = socket_path
-        self.registry = {}  # model_key → handler
-
-    def register_to_ingress(self):
-        """向 Ingress 注册所有模型"""
-        channel = grpc.insecure_channel(self.ingress_address)
-        stub = WorkerManagementStub(channel)
-
-        for (name, version), handler in self.registry.items():
-            stub.RegisterModel(RegisterModelRequest(
-                model_name=name,
-                model_version=version or "",
-                worker_address=f"unix://{self.socket_path}",
-                worker_id=self.worker_id,
-            ))
-
-    def serve(self):
-        """启动 Unix Socket 服务器，等待请求"""
-        server = UnixSocketServer(self.socket_path)
-        server.register_handler(self.handle_request)
-        server.serve_forever()
-
-    def handle_request(self, request_bytes):
-        """处理来自 Ingress 的请求"""
-        # 解析 protobuf
-        proto_req = ModelInferRequest()
-        proto_req.ParseFromString(request_bytes)
-
-        # 转换为 Python 对象
-        py_req = proto_to_python(proto_req)
-
-        # 调用 handler
-        handler = self.registry[(py_req.model_name, py_req.model_version)]
-        py_resp = handler(py_req)
-
-        # 转换回 protobuf
-        proto_resp = python_to_proto(py_resp)
-        return proto_resp.SerializeToString()
-```
-
-#### 2. AnyServe 类重构
-```python
-class AnyServe:
-    def __init__(self):
-        self._local_registry = {}
-
-    def model(self, name, version=None):
-        """装饰器：注册模型 handler"""
-        def decorator(func):
-            self._local_registry[(name, version)] = func
-            return func
-        return decorator
-
-    def run(self, ingress_address="localhost:9000"):
-        """作为 Worker 运行，连接到 Ingress"""
-        worker = Worker(
-            ingress_address=ingress_address,
-            socket_path=f"/tmp/worker-{uuid.uuid4()}.sock"
-        )
-
-        # 复制 registry
-        worker.registry = self._local_registry
-
-        # 注册到 Ingress
-        worker.register_to_ingress()
-
-        # 启动服务
-        worker.serve()
-```
-
-## 📊 对比：旧架构 vs 新架构
-
-| 特性 | 旧架构（错误） | 新架构（正确） |
-|------|---------------|---------------|
-| 主进程 | Python | C++ |
-| C++ 角色 | Python 扩展 | 独立 Ingress |
-| Python 角色 | 管理者 | Worker |
-| 模型注册 | Python 全局字典 | C++ Model Registry |
-| 请求路由 | Python → C++ → Python | C++ → Python |
-| Model 404 | 需要 Python | C++ 直接返回 |
-| 多 Worker | 不支持 | 支持 |
-| 性能 | 低（多次跨语言） | 高（一次转发） |
-
-## 🎯 优势
-
-1. **性能**：减少跨语言调用，C++ 直接路由
-2. **可靠性**：Ingress 独立于 Python，不会因 Python 崩溃而中断
-3. **扩展性**：支持多个 Worker，水平扩展
-4. **解耦**：Python 只关心推理，C++ 只关心路由
-5. **快速失败**：Model 不存在时无需查询 Python
-
-## 🔄 下一步实现
-
-1. ✅ 编译新的 protobuf (worker_management.proto)
-2. ✅ 实现 C++ ModelRegistry 类
-3. ✅ 实现 C++ WorkerManagement RPC
-4. ✅ 实现 C++ → Python Unix Socket 通信
-5. ✅ 重构 Python Worker 类
-6. ✅ 重构 C++ main.cpp
-7. ✅ 端到端测试
+**Last Updated**: 2026-01-13
