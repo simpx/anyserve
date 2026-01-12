@@ -1,0 +1,55 @@
+syntax = "proto3";
+
+package anyserve;
+
+// Worker Management Service
+// 用于 Python workers 向 C++ Ingress 注册模型
+service WorkerManagement {
+  // 注册模型
+  rpc RegisterModel(RegisterModelRequest) returns (RegisterModelResponse) {}
+
+  // 注销模型
+  rpc UnregisterModel(UnregisterModelRequest) returns (UnregisterModelResponse) {}
+
+  // Worker 心跳
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse) {}
+}
+
+message RegisterModelRequest {
+  // 模型名称
+  string model_name = 1;
+
+  // 模型版本（可选）
+  string model_version = 2;
+
+  // Worker 地址（例如 "unix:///tmp/worker-12345.sock"）
+  string worker_address = 3;
+
+  // Worker ID
+  string worker_id = 4;
+}
+
+message RegisterModelResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message UnregisterModelRequest {
+  string model_name = 1;
+  string model_version = 2;
+  string worker_id = 3;
+}
+
+message UnregisterModelResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message HeartbeatRequest {
+  string worker_id = 1;
+  repeated string model_names = 2;
+}
+
+message HeartbeatResponse {
+  bool healthy = 1;
+}

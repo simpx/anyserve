@@ -67,45 +67,46 @@ public:
         grpc::ServerContext* context,
         const inference::ModelInferRequest* request,
         inference::ModelInferResponse* response) override {
-        
-        // 从 request 中提取 capability 和参数
+
         // KServe v2 协议：model_name 作为 capability
         std::string capability = request->model_name();
-        
-        // 参数从 inputs 中提取（PoC：使用第一个 input 的 raw_input_contents）
-        std::string args_pickle;
-        if (request->raw_input_contents_size() > 0) {
-            args_pickle = request->raw_input_contents(0);
+
+        // 将整个 ModelInferRequest 序列化为 protobuf bytes
+        // 传递给 Python dispatcher（当前使用 pickle，未来改为 protobuf）
+        std::string request_bytes;
+        if (!request->SerializeToString(&request_bytes)) {
+            return grpc::Status(grpc::StatusCode::INTERNAL, "Failed to serialize request");
         }
-        
+
         // 检查是否为委托请求（通过 parameters）
         bool is_delegated = false;
-        for (const auto& param : request->parameters()) {
-            if (param.first == "is_delegated") {
-                is_delegated = param.second.bool_param();
-                break;
-            }
+        auto it = request->parameters().find("is_delegated");
+        if (it != request->parameters().end()) {
+            is_delegated = it->second.bool_param();
         }
-        
+
         try {
-            // 调用 dispatcher
-            // TODO: 需要通过某种方式调用 Python dispatcher
-            // 在 PoC 中，我们直接返回空结果或通过 Worker UDS 转发
-            
-            response->set_model_name(capability);
-            response->set_id(request->id());
-            
-            // 添加输出（PoC：返回空或 echo）
-            auto* output = response->add_outputs();
-            output->set_name("output");
-            output->set_datatype("BYTES");
-            output->add_shape(1);
-            
-            // 结果放入 raw_output_contents
-            // response->add_raw_output_contents(result_pickle);
-            
+            const auto& dispatcher = core_->get_dispatcher();
+            if (!dispatcher) {
+                return grpc::Status(grpc::StatusCode::UNIMPLEMENTED,
+                                  "Dispatcher not set");
+            }
+
+            // 调用 Python dispatcher
+            std::string response_bytes = dispatcher(
+                capability,
+                request_bytes,
+                is_delegated
+            );
+
+            // 解析 Python 返回的 ModelInferResponse
+            if (!response->ParseFromString(response_bytes)) {
+                return grpc::Status(grpc::StatusCode::INTERNAL,
+                                  "Failed to parse response from Python");
+            }
+
             return grpc::Status::OK;
-            
+
         } catch (const std::exception& e) {
             return grpc::Status(grpc::StatusCode::INTERNAL, e.what());
         }

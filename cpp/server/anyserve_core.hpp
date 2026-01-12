@@ -126,6 +126,11 @@ public:
      */
     int port() const { return port_; }
 
+    /**
+     * 获取 dispatcher（用于 gRPC service implementation）
+     */
+    const DispatcherCallback& get_dispatcher() const { return dispatcher_; }
+
 private:
     // 配置
     std::string root_dir_;

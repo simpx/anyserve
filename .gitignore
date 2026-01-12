@@ -46,3 +46,32 @@ python/anyserve/_core*.dylib
 *_pb2_grpc.py
 !anyserve_worker/proto/*_pb2.py
 !anyserve_worker/proto/*_pb2_grpc.py
+
+# Conan generated files
+cpp/conan*.cmake
+cpp/conan*.sh
+cpp/*Targets.cmake
+cpp/*Config.cmake
+cpp/*ConfigVersion.cmake
+cpp/*-Target-*.cmake
+cpp/*-config*.cmake
+cpp/*-release-*.cmake
+cpp/Find*.cmake
+cpp/deactivate_*.sh
+cpp/cmakedeps_macros.cmake
+cpp/CMakePresets.json
+
+# Test files (temporary, in root directory only)
+/test_*.py
+/test_*.sh
+
+# Temporary documentation files
+*_DESIGN.md
+*_STATUS.md
+*_PLAN.md
+*_SUMMARY.md
+
+# Legacy/backup files
+*.old
+*_legacy.txt
+*_v2.txt
