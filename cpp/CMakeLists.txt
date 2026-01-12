@@ -29,25 +29,11 @@ set(GRPC_PREDICT_PB_HDR "${GENERATED_DIR}/grpc_predict_v2.pb.h")
 set(GRPC_PREDICT_GRPC_SRC "${GENERATED_DIR}/grpc_predict_v2.grpc.pb.cc")
 set(GRPC_PREDICT_GRPC_HDR "${GENERATED_DIR}/grpc_predict_v2.grpc.pb.h")
 
-# Always generate proto files using Conan's protoc (must match libprotobuf version)
-get_target_property(gRPC_CPP_PLUGIN_EXECUTABLE gRPC::grpc_cpp_plugin IMPORTED_LOCATION_RELEASE)
-if(NOT gRPC_CPP_PLUGIN_EXECUTABLE)
-    get_target_property(gRPC_CPP_PLUGIN_EXECUTABLE gRPC::grpc_cpp_plugin IMPORTED_LOCATION)
-endif()
-
-# Get protoc from Conan's protobuf package (protobuf_PACKAGE_FOLDER_RELEASE is set by CMakeDeps)
-# This ensures we use the protoc that matches the libprotobuf version
-if(protobuf_PACKAGE_FOLDER_RELEASE)
-    set(PROTOC_EXECUTABLE "${protobuf_PACKAGE_FOLDER_RELEASE}/bin/protoc")
-elseif(TARGET protobuf::protoc)
-    get_target_property(PROTOC_EXECUTABLE protobuf::protoc IMPORTED_LOCATION_RELEASE)
-    if(NOT PROTOC_EXECUTABLE)
-        get_target_property(PROTOC_EXECUTABLE protobuf::protoc IMPORTED_LOCATION)
-    endif()
-else()
-    message(FATAL_ERROR "Could not find protoc executable. Make sure Conan dependencies are installed.")
-endif()
+# Proto code generation using Conan's tools
+set(PROTOC_EXECUTABLE "${protobuf_PACKAGE_FOLDER_RELEASE}/bin/protoc")
+set(GRPC_CPP_PLUGIN "${grpc_PACKAGE_FOLDER_RELEASE}/bin/grpc_cpp_plugin")
 message(STATUS "Using protoc: ${PROTOC_EXECUTABLE}")
+message(STATUS "Using grpc_cpp_plugin: ${GRPC_CPP_PLUGIN}")
 
 set(GRPC_PREDICT_PROTO "${PROTO_SRC_DIR}/grpc_predict_v2.proto")
 
@@ -56,7 +42,7 @@ add_custom_command(
     COMMAND ${PROTOC_EXECUTABLE}
     ARGS --grpc_out=${GENERATED_DIR}
          --cpp_out=${GENERATED_DIR}
-         --plugin=protoc-gen-grpc=${gRPC_CPP_PLUGIN_EXECUTABLE}
+         --plugin=protoc-gen-grpc=${GRPC_CPP_PLUGIN}
          -I ${PROTO_SRC_DIR}
          ${GRPC_PREDICT_PROTO}
     DEPENDS ${GRPC_PREDICT_PROTO}
