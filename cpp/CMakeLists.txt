@@ -19,44 +19,47 @@ if(BUILD_PYTHON_EXTENSION)
     find_package(pybind11 CONFIG REQUIRED)
 endif()
 
-# Proto files - use pre-generated files by default
+# Proto files - generate in build directory
 set(PROTO_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../proto")
-set(GENERATED_DIR "${CMAKE_CURRENT_SOURCE_DIR}/generated")
+set(GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+
+# Ensure generated directory exists
+file(MAKE_DIRECTORY ${GENERATED_DIR})
 
 set(GRPC_PREDICT_PB_SRC "${GENERATED_DIR}/grpc_predict_v2.pb.cc")
 set(GRPC_PREDICT_PB_HDR "${GENERATED_DIR}/grpc_predict_v2.pb.h")
 set(GRPC_PREDICT_GRPC_SRC "${GENERATED_DIR}/grpc_predict_v2.grpc.pb.cc")
 set(GRPC_PREDICT_GRPC_HDR "${GENERATED_DIR}/grpc_predict_v2.grpc.pb.h")
 
-if(REGENERATE_PROTO)
-    # Find the protoc compiler and grpc_cpp_plugin
-    get_target_property(gRPC_CPP_PLUGIN_EXECUTABLE gRPC::grpc_cpp_plugin IMPORTED_LOCATION_RELEASE)
-    if(NOT gRPC_CPP_PLUGIN_EXECUTABLE)
-        get_target_property(gRPC_CPP_PLUGIN_EXECUTABLE gRPC::grpc_cpp_plugin IMPORTED_LOCATION)
-    endif()
-
-    set(PROTOC_EXECUTABLE ${Protobuf_PROTOC_EXECUTABLE})
-    if(NOT PROTOC_EXECUTABLE)
-        get_target_property(PROTOC_EXECUTABLE protobuf::protoc IMPORTED_LOCATION_RELEASE)
-        if(NOT PROTOC_EXECUTABLE)
-            get_target_property(PROTOC_EXECUTABLE protobuf::protoc IMPORTED_LOCATION)
-        endif()
-    endif()
-
-    set(GRPC_PREDICT_PROTO "${PROTO_SRC_DIR}/grpc_predict_v2.proto")
-    
-    add_custom_command(
-        OUTPUT ${GRPC_PREDICT_PB_SRC} ${GRPC_PREDICT_PB_HDR} ${GRPC_PREDICT_GRPC_SRC} ${GRPC_PREDICT_GRPC_HDR}
-        COMMAND ${PROTOC_EXECUTABLE}
-        ARGS --grpc_out=${GENERATED_DIR}
-             --cpp_out=${GENERATED_DIR}
-             --plugin=protoc-gen-grpc=${gRPC_CPP_PLUGIN_EXECUTABLE}
-             -I ${PROTO_SRC_DIR}
-             ${GRPC_PREDICT_PROTO}
-        DEPENDS ${GRPC_PREDICT_PROTO}
-        COMMENT "Generating gRPC C++ code from grpc_predict_v2.proto"
-    )
+# Always generate proto files using Conan's protoc (must match libprotobuf version)
+get_target_property(gRPC_CPP_PLUGIN_EXECUTABLE gRPC::grpc_cpp_plugin IMPORTED_LOCATION_RELEASE)
+if(NOT gRPC_CPP_PLUGIN_EXECUTABLE)
+    get_target_property(gRPC_CPP_PLUGIN_EXECUTABLE gRPC::grpc_cpp_plugin IMPORTED_LOCATION)
 endif()
+
+# Use Conan's protoc - MUST match libprotobuf version
+set(PROTOC_EXECUTABLE ${Protobuf_PROTOC_EXECUTABLE})
+if(NOT PROTOC_EXECUTABLE)
+    get_target_property(PROTOC_EXECUTABLE protobuf::protoc IMPORTED_LOCATION_RELEASE)
+    if(NOT PROTOC_EXECUTABLE)
+        get_target_property(PROTOC_EXECUTABLE protobuf::protoc IMPORTED_LOCATION)
+    endif()
+endif()
+message(STATUS "Using protoc: ${PROTOC_EXECUTABLE}")
+
+set(GRPC_PREDICT_PROTO "${PROTO_SRC_DIR}/grpc_predict_v2.proto")
+
+add_custom_command(
+    OUTPUT ${GRPC_PREDICT_PB_SRC} ${GRPC_PREDICT_PB_HDR} ${GRPC_PREDICT_GRPC_SRC} ${GRPC_PREDICT_GRPC_HDR}
+    COMMAND ${PROTOC_EXECUTABLE}
+    ARGS --grpc_out=${GENERATED_DIR}
+         --cpp_out=${GENERATED_DIR}
+         --plugin=protoc-gen-grpc=${gRPC_CPP_PLUGIN_EXECUTABLE}
+         -I ${PROTO_SRC_DIR}
+         ${GRPC_PREDICT_PROTO}
+    DEPENDS ${GRPC_PREDICT_PROTO}
+    COMMENT "Generating gRPC C++ code from grpc_predict_v2.proto"
+)
 
 # Core library (static, used by both executable and Python extension)
 add_library(anyserve_core_lib STATIC
@@ -99,8 +102,8 @@ if(BUILD_PYTHON_EXTENSION)
         anyserve_core_lib
     )
     
-    # Install to python package directory
+    # Install to python package directory (for scikit-build-core)
     install(TARGETS _core
-        LIBRARY DESTINATION ${CMAKE_INSTALL_PREFIX}/python/anyserve
+        LIBRARY DESTINATION anyserve
     )
 endif()

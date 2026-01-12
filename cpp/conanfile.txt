@@ -4,6 +4,9 @@ protobuf/5.27.0
 nlohmann_json/3.11.3
 pybind11/2.11.1
 
+[tool_requires]
+protobuf/5.27.0
+
 [generators]
 CMakeDeps
 CMakeToolchain

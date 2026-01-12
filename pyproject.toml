@@ -13,7 +13,11 @@ dependencies = [
     "grpcio>=1.60.0",
     "grpcio-tools>=1.60.0",
     "requests>=2.31.0",
+    "click>=8.0.0",
 ]
+
+[project.scripts]
+anyserve = "anyserve.cli:main"
 
 [build-system]
 requires = [
@@ -27,19 +31,11 @@ cmake.source-dir = "cpp"
 cmake.build-type = "Release"
 cmake.args = [
     "-DBUILD_PYTHON_EXTENSION=ON",
-    "-DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake",
-    "-DREGENERATE_PROTO=OFF"
+    "-DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake"
 ]
-wheel.install-dir = "python/anyserve"
 wheel.packages = ["python/anyserve"]
-
-[tool.setuptools.packages.find]
-where = ["python"]
-include = ["anyserve*"]
 
 [dependency-groups]
 dev = [
     "pytest>=7.0.0",
-    "scikit-build-core>=0.5",
-    "pybind11>=2.11",
 ]
