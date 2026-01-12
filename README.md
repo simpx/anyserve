@@ -1,95 +1,214 @@
 # AnyServe
 
-面向大规模 LLM 推理的 Capability-Oriented Serving Runtime（PoC）。采用 Rust 控制路径 + Python 执行路径的混合架构，用最小实现验证 capability 路由与委托机制。
+High-performance model serving framework with C++ Ingress and Python Worker architecture, supporting the KServe v2 inference protocol.
 
-## 文档
+## Features
 
-- [架构总览](docs/architecture.md)：三层边界、核心抽象、委托与 Object Plane。
-- [MVP 范围](docs/mvp.md)：PoC 目标、非目标、验收标准。
-- [agents.md](agents.md)：AI Agent 协作指南。
+- **🚀 High Performance**: C++ gRPC ingress for request routing and traffic handling
+- **🐍 Python Simplicity**: Write model handlers in pure Python with decorators
+- **🔌 KServe Compatible**: Full support for KServe v2 inference protocol
+- **📊 Multi-Model**: Serve multiple models with version support in a single deployment
+- **🔄 Dynamic Registration**: Workers register models at runtime via gRPC
+- **⚡ Unix Socket IPC**: High-speed inter-process communication between Ingress and Workers
 
-## 核心概念
+## Architecture
 
-- Capability First：以语义能力（如 decode、decode.heavy）为路由与编排单位。
-- Replica as Runtime：不可拆分的执行单元（Rust runtime + Python workers），对调度器透明。
-- Delegation：本地硬不匹配时升级 capability 并交由调度器重新路由，最多一次委托。
-
-## 目录结构
-
-- python/anyserve/：FastAPI 控制面与 Python handlers。
-- src/：Rust runtime（请求接入、调度、IPC）。
-- docs/：项目文档（架构与 MVP）。
-- agents.md：AI Agent 协作指南。
-
-## 快速开始
-
-环境要求：Python 3.11+、Rust (Cargo)。
-
-### 1. 安装
-
-```bash
-# 安装 Python 库 (anyserve_worker)
-pip install -e .
-
-# 安装 CLI 工具 (anyserve)
-cargo install --path .
+```
+External Clients (gRPC)
+        ↓
+   C++ Ingress (Port 8000)
+   ├─ Model Registry
+   ├─ Request Router
+   └─ Worker Client
+        ↓ (Unix Socket)
+   Python Workers
+   └─ Model Handlers (@model decorator)
 ```
 
-### 2. 定义应用 (python)
+AnyServe uses a **C++ Ingress + Python Worker** architecture:
+- **C++ Ingress**: Handles all external gRPC traffic, routes requests to appropriate workers
+- **Python Workers**: Independent processes running your model inference code
+- **Communication**: gRPC for management, Unix Domain Sockets for high-speed inference
 
-创建一个 Python 文件 (例如 `app.py`):
+For detailed architecture, see:
+- [System Architecture](docs/architecture.md) - Overall design and concepts
+- [Runtime Architecture](docs/runtime.md) - Implementation details
+
+## Quick Start
+
+### Prerequisites
+
+- Python 3.11+
+- C++ compiler with C++17 support
+- CMake 3.20+
+- Conan 2.0+ (for C++ dependencies)
+
+### Installation
+
+```bash
+# Install dependencies and build
+just setup
+just build
+
+# Install Python package
+pip install -e python/
+```
+
+### Example: Echo Model
+
+Create `my_app.py`:
 
 ```python
-from anyserve_worker import Worker, ModelInferResponse
+from anyserve import AnyServe, ModelInferRequest, ModelInferResponse
 
-app = Worker()
+app = AnyServe()
 
-@app.model("my_model")
-def impl(request):
-    print(f"Handling request for {request.model_name}")
-    return ModelInferResponse(model_name=request.model_name)
+@app.model("echo")
+def echo_handler(request: ModelInferRequest) -> ModelInferResponse:
+    """Echo back all inputs as outputs"""
+    response = ModelInferResponse(
+        model_name=request.model_name,
+        id=request.id
+    )
+
+    for inp in request.inputs:
+        out = response.add_output(
+            name=f"output_{inp.name}",
+            datatype=inp.datatype,
+            shape=inp.shape
+        )
+        out.contents = inp.contents
+
+    return response
 ```
 
-### 3. 启动服务
-
-使用 `anyserve` 命令行工具启动：
+### Run the Server
 
 ```bash
-# 格式: anyserve <module>:<variable>
-anyserve app:app --port 8080
+# Start server with 1 worker
+python -m anyserve.cli my_app:app --port 8000 --workers 1
 ```
 
-### 4. 客户端调用
+### Test the Model
 
-使用内置 Client 进行交互：
+```bash
+# Using the test client
+python examples/basic/run_example.py
+```
+
+Or use the Python client:
 
 ```python
-from anyserve_worker import Client
+import grpc
+from anyserve._proto import grpc_predict_v2_pb2
+from anyserve._proto import grpc_predict_v2_pb2_grpc
 
-client = Client("localhost:8080")
-if client.is_alive():
-    result = client.infer("my_model", inputs={"input_1": [1, 2, 3]})
-    print(result)
+channel = grpc.insecure_channel('localhost:8000')
+stub = grpc_predict_v2_pb2_grpc.GRPCInferenceServiceStub(channel)
+
+# Check server status
+server_live = stub.ServerLive(grpc_predict_v2_pb2.ServerLiveRequest())
+print(f"Server live: {server_live.live}")
+
+# Check model status
+model_ready = stub.ModelReady(
+    grpc_predict_v2_pb2.ModelReadyRequest(name="echo")
+)
+print(f"Model ready: {model_ready.ready}")
+
+# Make inference request
+request = grpc_predict_v2_pb2.ModelInferRequest()
+request.model_name = "echo"
+request.id = "test-1"
+
+input_tensor = request.inputs.add()
+input_tensor.name = "input"
+input_tensor.datatype = "INT32"
+input_tensor.shape.extend([3])
+input_tensor.contents.int_contents.extend([1, 2, 3])
+
+response = stub.ModelInfer(request)
+print(f"Response: {response}")
 ```
 
-## 老版本快速开始 (Dev Mode)
+## Development
 
-1) 初始化环境（如需安装 Rust/just）：
+### Project Structure
+
+```
+anyserve/
+├── cpp/                    # C++ Ingress implementation
+│   ├── server/            # Core server components
+│   │   ├── anyserve_ingress.{cpp,hpp}   # Main ingress server
+│   │   ├── model_registry.{cpp,hpp}      # Model registry
+│   │   └── worker_client.{cpp,hpp}       # Unix socket client
+│   └── build/             # Build artifacts (gitignored)
+├── python/anyserve/       # Python library
+│   ├── cli.py            # CLI entry point
+│   ├── kserve.py         # KServe v2 protocol
+│   └── worker/           # Worker implementation
+├── proto/                 # Protocol definitions
+│   ├── grpc_predict_v2.proto      # KServe v2 protocol
+│   └── worker_management.proto     # Worker registration
+├── examples/             # Example applications
+│   └── basic/           # Basic examples
+├── docs/                # Documentation
+└── justfile            # Build and development commands
+```
+
+### Build Commands
+
 ```bash
-./scripts/bootstrap.sh
+# Setup environment (install Conan dependencies)
+just setup
+
+# Build C++ components
+just build
+
+# Clean build artifacts
+just clean
+
+# Run tests (coming soon)
+# just test
 ```
 
-2) 安装 Python 依赖：
-```bash
-uv sync
-```
+### Documentation
 
-3) 开发模式运行：
-```bash
-just run
-```
+- [System Architecture](docs/architecture.md) - High-level system design
+- [Runtime Architecture](docs/runtime.md) - Implementation details and component interactions
+- [MVP Specification](docs/mvp.md) - Project scope and goals
+- [Agent Guide](agents.md) - AI assistant collaboration guide
 
-如需重新构建 Rust 扩展：
-```bash
-uv run maturin develop
-```
+## Examples
+
+See the [examples/](examples/) directory for complete examples:
+
+- `basic/` - Basic model serving with echo, add, and classifier models
+- `multi_stage/` - Multi-stage pipelines (placeholder for future)
+- `streaming/` - Streaming responses (placeholder for future)
+
+## Contributing
+
+This project uses AI-assisted development. See [agents.md](agents.md) for collaboration guidelines.
+
+## License
+
+[Add your license here]
+
+## Status
+
+✅ **Core Features Complete**
+- C++ Ingress server with gRPC and Unix Socket support
+- Python Worker with KServe v2 protocol
+- Dynamic model registration
+- Multi-model serving with versioning
+
+🚧 **In Progress**
+- Performance optimization
+- Monitoring and metrics
+- Advanced load balancing
+
+📋 **Planned**
+- Streaming inference support
+- Model auto-scaling
+- Distributed deployment

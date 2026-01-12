@@ -1,11 +1,14 @@
-# AnyServe Architecture - Ingress Mode
+# AnyServe Runtime Architecture
 
-## 🎯 核心设计原则
+> **Runtime Implementation Guide** - This document describes the runtime architecture
+> and internal implementation details. For the overall system design, see [architecture.md](architecture.md).
 
-1. **C++ 作为 Ingress**：独立主进程，接收所有外部请求
-2. **Python 作为 Worker**：独立子进程，处理模型推理逻辑
-3. **动态注册**：Worker 启动时向 Ingress 注册模型
-4. **零 Python 依赖**：Ingress 可以独立处理所有非推理请求
+## 🎯 Design Principles
+
+1. **C++ Ingress**: Standalone main process handling all external requests
+2. **Python Worker**: Independent subprocess for model inference logic
+3. **Dynamic Registration**: Workers register models with Ingress on startup
+4. **Zero Python Dependency**: Ingress can handle all non-inference requests independently
 
 ## 📐 架构图
 

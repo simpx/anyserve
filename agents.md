@@ -1,130 +1,316 @@
 # AI Agent Guide - AnyServe
 
-> 本文档旨在指导 AI Agent 理解项目架构、上下文与开发规范，以便高效进行代码维护与功能扩展。
+> This guide helps AI agents understand the project architecture, context, and development standards for effective code maintenance and feature development.
 
-## 1. Project Overview (项目概览)
+## 1. Project Overview
 
-**AnyServe** 是一个 **面向大规模 LLM 推理的 Capability-Oriented Serving Runtime**。
-它的核心目标是为上层请求级调度器提供一个稳定的执行层，以 **capability**（语义能力）为单位进行编排，支持 **delegation**（委托）机制来处理不匹配的请求。
+**AnyServe** is a high-performance model serving framework with a **C++ Ingress + Python Worker** architecture, supporting the KServe v2 inference protocol.
 
-## 2. Architecture & Responsibilities (架构与职责)
+**Core Principles:**
+- **Performance First**: C++ handles all request routing and traffic management
+- **Developer Friendly**: Write model handlers in pure Python with simple decorators
+- **Protocol Standard**: Full KServe v2 compatibility for inference requests
+- **Dynamic Scaling**: Workers register models at runtime, enabling flexible deployment
 
-本项目采用 **C++ (Control Plane) + Python (Execution Plane)** 的混合架构。
+## 2. Architecture & Components
 
-### 2.1 C++ Runtime (Control Plane)
-> 位于 `cpp/src/`，核心控制逻辑，主进程。
+### 2.1 C++ Ingress (Request Router)
+> Location: `cpp/server/`
 
-- **职责**:
-    - **Ingress**: 处理 gRPC 请求入口（基于 KServe v2 协议）。
-    - **Dispatch**: 请求排队、并发控制、capability 路由。
-    - **Delegation**: 当本地无法满足 capability 时，执行能力升级并交由调度器重路由。
-    - **IPC**: 管理 Python Worker 进程，通过 Unix Domain Socket 传递请求与结果。
-    - **Object Plane**: 控制大对象传输与生命周期（通过 POSIX SHM）。
+**Responsibilities:**
+- **gRPC Server**: Handles all external KServe v2 protocol requests
+- **Model Registry**: Thread-safe mapping of model names to worker addresses
+- **Request Routing**: Routes inference requests to appropriate workers
+- **Worker Management**: Accepts model registrations from Python workers
+- **Unix Socket Client**: High-speed IPC with worker processes
 
-- **核心组件**:
-    - `anyserve_core.hpp/cpp` - 核心控制平面类
-    - `shm_manager.hpp/cpp` - POSIX 共享内存管理
-    - `process_supervisor.hpp/cpp` - Python Worker 进程管理
-    - `python_bindings.cpp` - pybind11 绑定（暴露 `anyserve._core` 模块）
-    - `main.cpp` - 独立可执行文件入口
+**Key Files:**
+- `anyserve_ingress.{cpp,hpp}` - Main ingress server with gRPC services
+- `model_registry.{cpp,hpp}` - Thread-safe model routing table
+- `worker_client.{cpp,hpp}` - Unix socket communication with workers
+- `main_v2.cpp` - Standalone executable entry point
 
-- **异步框架**: gRPC C++ async CompletionQueue
+**Technologies:**
+- gRPC C++ for external API
+- Unix Domain Sockets for worker IPC
+- Protobuf for serialization
 
-### 2.2 Python Worker (Execution Plane)
-> 位于 `python/anyserve/`，具体业务逻辑，子进程。
+### 2.2 Python Worker (Model Inference)
+> Location: `python/anyserve/`
 
-- **职责**:
-    - **Handlers**: 用户编写的 capability 实现逻辑。
-    - **Inference**: 集成推理引擎（如 vLLM, sglang, torch逻辑）。
-    - **Execution**: 接收 C++ 派发的请求，执行并返回结果。
+**Responsibilities:**
+- **Model Handlers**: User-defined inference logic with `@model()` decorator
+- **Protocol Implementation**: KServe v2 request/response handling
+- **Worker Registration**: Register models with ingress via gRPC
+- **Unix Socket Server**: Listen for inference requests from ingress
 
-## 3. Core Concepts (核心概念)
+**Key Files:**
+- `__init__.py` - Public API (AnyServe class, decorators)
+- `cli.py` - CLI entry point for starting servers
+- `kserve.py` - KServe v2 protocol implementation
+- `worker/__main__.py` - Worker process implementation
 
-开发时必须准确理解以下术语：
+### 2.3 Protocol Definitions
+> Location: `proto/`
 
-- **Capability (能力)**: 语义层面的计算能力（如 `decode`, `decode.heavy`, `embedding`），而非物理资源描述。
-- **Replica (副本)**: AnyServe 的运行时单元，注册一组 capabilities。
-- **Delegation (委托)**: 本地 Replica 无法满足请求 capability 时，将其升级（Upgrade）并交还调度器重新路由的机制。**不是** Replica 间的直接 RPC 调用。
+- `grpc_predict_v2.proto` - KServe v2 inference protocol
+- `worker_management.proto` - Worker registration protocol
 
-## 4. Development Workflow (开发流程)
+## 3. Development Workflow
 
-Agent 在进行开发任务时，应遵循以下标准流程：
+### Standard Development Flow
 
-1.  **Modify C++ (`cpp/src/`)**:
-    - 涉及控制流、通信、高性能逻辑修改时。
-    - 通过 pybind11 暴露接口到 Python。
-2.  **Build C++ Extension**:
-    - 运行 `just setup-cpp` 安装 C++ 依赖（首次或依赖变更时）。
-    - 运行 `just build` 编译 C++ 并生成 `anyserve._core` Python 扩展。
-3.  **Modify Python (`python/anyserve/`)**:
-    - 涉及具体 handler 实现、业务逻辑、接口定义时。
-    - 调用 `anyserve._core` 中的 C++ 绑定。
-4.  **Verify**:
-    - 运行 `just run` 启动服务。
-    - 运行 `just test` 运行测试。
+1. **Modify C++ Code** (when needed):
+   - Changes to routing, registry, or IPC layer
+   - Located in `cpp/server/`
+   - Run `just build` to compile
 
-## 5. Code Standards (代码规范)
+2. **Modify Python Code**:
+   - Model handlers, protocols, or worker logic
+   - Located in `python/anyserve/`
+   - No compilation needed, hot-reload in dev mode
 
-- **C++**:
-    - C++17 标准。
-    - 使用 `namespace anyserve` 包裹所有代码。
-    - 错误处理使用异常，通过 pybind11 自动转换为 Python 异常。
-    - 注意 GIL 管理：调用 Python 时获取 GIL，长时间 C++ 操作时释放 GIL。
-- **Python**:
-    - 使用 Type Hints。
-    - 模块名为 `anyserve`，C++ 扩展引用为 `from . import _core` 或 `from anyserve._core import AnyserveCore`。
-- **Dependencies**:
-    - C++ 依赖管理：`cpp/conanfile.txt` (使用 Conan)
-    - Python 依赖/环境管理：`pyproject.toml` (使用 `uv` 管理)
-    - 构建系统：CMake + scikit-build-core
+3. **Test Changes**:
+   - Run `just build` to compile C++
+   - Start server: `python -m anyserve.cli examples/basic/app:app`
+   - Test: `python examples/basic/run_example.py`
 
-## 6. MVP Scope Constraints (MVP 阶段约束)
+### Common Tasks
 
-当前处于 PoC/MVP 阶段，请严格遵守以下边界（详见 `docs/mvp.md`）：
+**Adding a New Model Handler:**
+```python
+# In your app.py
+from anyserve import AnyServe, ModelInferRequest, ModelInferResponse
 
-- **Delegation**: 最多允许 **1 次** delegation（防止转发风暴）。
-- **Routing**: 跨 Replica 交互必须通过 **调度器重路由**，禁止 Replica 直连。
-- **Non-Goals (本阶段不做)**:
-    - 复杂的 batching 策略。
-    - 真实的 Object Store（目前仅内存/Stub）。
-    - 复杂的 K8s 集成或 Autoscaling。
-    - 多机 TP/EP 细节。
+app = AnyServe()
 
-## 7. Useful Commands (常用命令)
+@app.model("my_model", version="v1")
+def my_handler(request: ModelInferRequest) -> ModelInferResponse:
+    # Your inference logic here
+    response = ModelInferResponse(
+        model_name=request.model_name,
+        id=request.id
+    )
+    # Add outputs
+    return response
+```
 
-- `just setup`: 安装 Python 依赖。
-- `just setup-cpp`: 安装 C++ 依赖（Conan）。
-- `just build`: 编译 C++ 并安装 Python 扩展。
-- `just build-node`: 仅编译独立可执行文件。
-- `just run`: 启动 AnyServe 服务。
-- `just run-node <target>`: 启动独立 node 并加载指定 app。
-- `just test`: 运行测试。
-- `just clean`: 清理构建产物。
-- `just gen-proto`: 生成 proto 文件。
+**Modifying C++ Routing Logic:**
+1. Edit `cpp/server/anyserve_ingress.cpp`
+2. Run `just build` to compile
+3. Restart server to use new binary
 
-## 8. Directory Structure (目录结构)
+**Adding Protocol Support:**
+1. Define in `.proto` files
+2. Regenerate: C++ build automatically regenerates
+3. Python: Regenerate with protoc manually (see README)
+
+## 4. Code Standards
+
+### C++ Standards
+- **C++17** standard
+- **Namespace**: All code in `namespace anyserve`
+- **Error Handling**: Use gRPC Status codes for errors
+- **Thread Safety**: Model registry must be thread-safe (use mutexes)
+- **Resource Management**: Use RAII (unique_ptr, etc.)
+- **Style**: Follow Google C++ Style Guide
+
+### Python Standards
+- **Type Hints**: Use for all function signatures
+- **PEP 8**: Follow Python style guide
+- **Imports**: Use absolute imports from `anyserve`
+- **Async**: Avoid mixing sync/async code
+- **Documentation**: Docstrings for all public APIs
+
+### Protocol Standards
+- **KServe v2**: Strict adherence to protocol specification
+- **Protobuf**: Use proto3 syntax
+- **Backward Compatibility**: Don't break existing message formats
+
+## 5. Current Implementation Status
+
+### ✅ Completed Features
+- C++ Ingress with gRPC server (KServe v2 protocol)
+- Model registry with thread-safe lookups
+- Unix Domain Socket IPC between Ingress and Workers
+- Python Worker with model registration
+- Multi-model serving with version support
+- Dynamic model registration at runtime
+- Basic error handling (NOT_FOUND, INTERNAL errors)
+
+### 🚧 Known Limitations
+- No connection pooling for Unix sockets (single-use connections)
+- Limited error recovery and retry logic
+- No metrics or monitoring yet
+- No distributed deployment support
+
+### 📋 Future Enhancements
+- Streaming inference support
+- Model auto-scaling based on load
+- Advanced load balancing strategies
+- Distributed multi-node deployment
+- Performance metrics and monitoring
+- Graceful shutdown and cleanup
+
+## 6. Testing Guidelines
+
+### Unit Tests (TODO)
+- C++: Use Google Test framework
+- Python: Use pytest
+- Location: `tests/` directory
+
+### Integration Tests
+- Full end-to-end tests with real gRPC clients
+- Located in `examples/basic/test_client.py`
+- Run: `python examples/basic/test_client.py`
+
+### Manual Testing
+```bash
+# Terminal 1: Start server
+python -m anyserve.cli examples/basic/app:app --port 8000 --workers 1
+
+# Terminal 2: Run test client
+python examples/basic/run_example.py
+```
+
+## 7. Build System
+
+### Justfile Commands
+- `just setup` - Install Conan dependencies for C++
+- `just build` - Compile C++ Ingress binary
+- `just clean` - Remove build artifacts
+- `just test` - Run tests (coming soon)
+
+### Manual Build
+```bash
+# Install Conan dependencies
+cd cpp && conan install . --build=missing
+
+# Build with CMake
+cd cpp/build && cmake .. && cmake --build .
+```
+
+## 8. Project Structure
 
 ```
 anyserve/
-├── cpp/                    # C++ 控制平面
-│   ├── CMakeLists.txt      # CMake 构建配置
-│   ├── conanfile.txt       # Conan 依赖配置
-│   └── src/
-│       ├── anyserve_core.hpp/cpp    # 核心控制平面
-│       ├── shm_manager.hpp/cpp      # SHM 管理
-│       ├── process_supervisor.hpp/cpp # 进程管理
-│       ├── python_bindings.cpp      # pybind11 绑定
-│       └── main.cpp                 # 独立可执行入口
-├── python/
-│   └── anyserve/           # Python 包
-│       ├── __init__.py
-│       ├── api.py          # 用户 API
-│       ├── core.py         # 核心封装（调用 _core）
-│       └── _core.so        # C++ 扩展（编译生成）
-├── proto/                  # gRPC proto 定义
-├── anyserve_worker/        # Python Worker 实现
-├── anyserve_scheduler/     # 调度器（PoC）
-├── examples/               # 示例代码
-├── docs/                   # 文档
-├── pyproject.toml          # Python 项目配置
-└── Justfile                # 构建命令
+├── cpp/                           # C++ Ingress implementation
+│   ├── server/
+│   │   ├── anyserve_ingress.{cpp,hpp}    # Main gRPC server
+│   │   ├── model_registry.{cpp,hpp}       # Model routing table
+│   │   ├── worker_client.{cpp,hpp}        # Unix socket client
+│   │   └── main_v2.cpp                    # Standalone entry point
+│   ├── CMakeLists.txt             # CMake build configuration
+│   └── conanfile.txt              # C++ dependencies (Conan)
+│
+├── python/anyserve/               # Python library
+│   ├── __init__.py               # Public API
+│   ├── cli.py                    # CLI entry point
+│   ├── kserve.py                 # KServe v2 implementation
+│   └── worker/
+│       └── __main__.py           # Worker process logic
+│
+├── proto/                         # Protocol definitions
+│   ├── grpc_predict_v2.proto     # KServe v2 protocol
+│   └── worker_management.proto    # Worker registration
+│
+├── examples/                      # Example applications
+│   ├── basic/                    # Basic echo/add/classifier
+│   ├── multi_stage/              # Pipeline examples (future)
+│   └── streaming/                # Streaming examples (future)
+│
+├── docs/                         # Documentation
+│   ├── architecture.md           # System architecture
+│   ├── runtime.md               # Implementation details
+│   └── mvp.md                   # Project scope
+│
+├── justfile                      # Build commands
+├── README.md                     # Getting started guide
+└── agents.md                     # This file
+```
+
+## 9. Debugging Tips
+
+### C++ Debugging
+- Build with debug symbols: `cmake -DCMAKE_BUILD_TYPE=Debug`
+- Add logging: Use `std::cerr` (goes to stderr)
+- Check process: `ps aux | grep anyserve_ingress`
+- Check ports: `lsof -i :8000`
+
+### Python Debugging
+- Add print statements in handlers
+- Check worker output in CLI logs
+- Verify model registration: Check ingress startup logs
+- Test protocol: Use `grpcurl` or Python gRPC client
+
+### Common Issues
+1. **"Failed to forward request to worker"**
+   - Worker not started or crashed
+   - Unix socket file missing/permissions
+   - Check `/tmp/anyserve-worker-*.sock`
+
+2. **"Model not found"**
+   - Worker didn't register successfully
+   - Check gRPC connection to management port
+   - Verify model name/version match
+
+3. **Proxy connection errors**
+   - Unset HTTP_PROXY environment variables
+   - Add `export NO_PROXY=localhost,127.0.0.1`
+
+## 10. Key Design Decisions
+
+### Why C++ Ingress?
+- High-performance gRPC handling
+- Efficient request routing without GIL
+- Native thread support for concurrent requests
+- Lower latency than pure Python
+
+### Why Unix Sockets for IPC?
+- Faster than TCP for local communication
+- No network overhead
+- Simple point-to-point communication
+- Suitable for single-machine deployment
+
+### Why Not Reuse Connections?
+- Workers close connections after each request
+- Simpler state management
+- Avoids connection pool complexity
+- Performance impact is minimal with Unix sockets
+
+### Why KServe v2 Protocol?
+- Industry standard for model serving
+- Broad client library support
+- Clear separation of concerns
+- Extensible for future features
+
+## 11. Contributing Guidelines
+
+When making changes:
+1. **Understand Impact**: Read relevant docs first
+2. **Test Thoroughly**: Verify all 9 integration tests pass
+3. **Document Changes**: Update relevant markdown files
+4. **Follow Standards**: Adhere to code style guidelines
+5. **Commit Messages**: Use conventional commits format
+
+**Commit Format:**
+```
+type(scope): brief description
+
+Detailed explanation if needed.
+
+Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>
+```
+
+Types: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`
+
+## 12. Resources
+
+- [KServe v2 Protocol](https://github.com/kserve/kserve/tree/master/docs/predict-api/v2)
+- [gRPC C++ Documentation](https://grpc.io/docs/languages/cpp/)
+- [Protocol Buffers Guide](https://developers.google.com/protocol-buffers)
+- [Unix Domain Sockets](https://man7.org/linux/man-pages/man7/unix.7.html)
+
+---
+
+**Last Updated:** 2026-01-13

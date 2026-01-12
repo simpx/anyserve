@@ -1,13 +1,18 @@
 """
-AnyServe KServe Server Example
-===============================
+AnyServe Basic Example - Server Application
+============================================
 
 This example demonstrates how to create model handlers using the KServe v2
 Inference Protocol with AnyServe.
 
+Models:
+    - echo: Returns all inputs as outputs
+    - add: Adds two INT32 tensors element-wise
+    - classifier:v1: Versioned model example
+
 Usage:
-    Development:  python examples/kserve_server.py
-    Production:   anyserve examples.kserve_server:app
+    Development:  python examples/basic/app.py
+    Production:   python -m anyserve.cli examples.basic.app:app --port 8000 --workers 1
 """
 
 import anyserve
