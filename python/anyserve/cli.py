@@ -1,11 +1,3 @@
-"""
-AnyServe CLI - Command Line Interface
-
-Usage:
-    anyserve run app:main
-    anyserve --version
-"""
-
 import click
 import importlib
 import sys
@@ -47,8 +39,6 @@ def run(target: str, host: str, port: int, reload: bool):
     click.echo(f"Starting AnyServe on {host}:{port}")
     click.echo(f"Loading: {target}")
     
-    # TODO: 实际启动 anyserve 服务
-    # 目前先调用 app（假设是一个可调用对象或 anyserve 应用）
     if callable(app):
         app()
     else:

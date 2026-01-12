@@ -5,10 +5,8 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-# Option to build Python extension
 option(BUILD_PYTHON_EXTENSION "Build pybind11 Python extension" ON)
 
-# Dependencies provided by Conan
 find_package(gRPC CONFIG REQUIRED)
 find_package(Protobuf CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
@@ -17,11 +15,8 @@ if(BUILD_PYTHON_EXTENSION)
     find_package(pybind11 CONFIG REQUIRED)
 endif()
 
-# Proto files - generate in build directory
 set(PROTO_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../proto")
 set(GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
-
-# Ensure generated directory exists
 file(MAKE_DIRECTORY ${GENERATED_DIR})
 
 set(GRPC_PREDICT_PB_SRC "${GENERATED_DIR}/grpc_predict_v2.pb.cc")
@@ -29,11 +24,8 @@ set(GRPC_PREDICT_PB_HDR "${GENERATED_DIR}/grpc_predict_v2.pb.h")
 set(GRPC_PREDICT_GRPC_SRC "${GENERATED_DIR}/grpc_predict_v2.grpc.pb.cc")
 set(GRPC_PREDICT_GRPC_HDR "${GENERATED_DIR}/grpc_predict_v2.grpc.pb.h")
 
-# Proto code generation using Conan's tools
 set(PROTOC_EXECUTABLE "${protobuf_PACKAGE_FOLDER_RELEASE}/bin/protoc")
 set(GRPC_CPP_PLUGIN "${grpc_PACKAGE_FOLDER_RELEASE}/bin/grpc_cpp_plugin")
-message(STATUS "Using protoc: ${PROTOC_EXECUTABLE}")
-message(STATUS "Using grpc_cpp_plugin: ${GRPC_CPP_PLUGIN}")
 
 set(GRPC_PREDICT_PROTO "${PROTO_SRC_DIR}/grpc_predict_v2.proto")
 
@@ -49,7 +41,6 @@ add_custom_command(
     COMMENT "Generating gRPC C++ code from grpc_predict_v2.proto"
 )
 
-# Core library (static, used by both executable and Python extension)
 add_library(anyserve_core_lib STATIC
     core/shm_manager.cpp
     server/process_supervisor.cpp
@@ -71,7 +62,6 @@ target_link_libraries(anyserve_core_lib PUBLIC
     nlohmann_json::nlohmann_json
 )
 
-# Standalone executable
 add_executable(anyserve_node
     server/main.cpp
 )
@@ -80,18 +70,8 @@ target_link_libraries(anyserve_node PRIVATE
     anyserve_core_lib
 )
 
-# Python extension (pybind11)
 if(BUILD_PYTHON_EXTENSION)
-    pybind11_add_module(_core
-        extension/python_bindings.cpp
-    )
-    
-    target_link_libraries(_core PRIVATE
-        anyserve_core_lib
-    )
-    
-    # Install to python package directory (for scikit-build-core)
-    install(TARGETS _core
-        LIBRARY DESTINATION anyserve
-    )
+    pybind11_add_module(_core extension/python_bindings.cpp)
+    target_link_libraries(_core PRIVATE anyserve_core_lib)
+    install(TARGETS _core LIBRARY DESTINATION anyserve)
 endif()

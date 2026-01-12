@@ -1,10 +1,6 @@
-# Justfile for anyserve
-
-# List available commands
 default:
     @just --list
 
-# Setup environment (conan dependencies + pip install)
 setup:
     #!/usr/bin/env bash
     set -e
@@ -12,7 +8,6 @@ setup:
     pushd cpp && conan install . --output-folder=build --build=missing -s build_type=Release && popd
     uv pip install -e . -v
 
-# Run tests
 test target="all":
     #!/usr/bin/env bash
     set -e
@@ -33,7 +28,6 @@ test target="all":
             ;;
     esac
 
-# Clean all build artifacts
 clean:
     rm -rf cpp/build
     rm -rf python/anyserve/_core*.so python/anyserve/_core*.dylib
