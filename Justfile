@@ -10,8 +10,6 @@ setup:
     set -e
     uv venv --python 3.13 2>/dev/null || true
     pushd cpp && conan install . --output-folder=build --build=missing -s build_type=Release && popd
-    rm -rf cpp/generated/*.pb.cc cpp/generated/*.pb.h 2>/dev/null || true
-    source cpp/build/conanbuild.sh  # Ensure Conan's protoc is in PATH
     uv pip install -e . -v
 
 # Run tests

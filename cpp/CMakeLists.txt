@@ -7,10 +7,18 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 # Option to build Python extension
 option(BUILD_PYTHON_EXTENSION "Build pybind11 Python extension" ON)
-# Option to regenerate proto files (requires matching protoc version)
-option(REGENERATE_PROTO "Regenerate protobuf files" OFF)
 
-# Dependencies provided by Conan or system
+# ============================================================================
+# Pre-set Protobuf_PROTOC_EXECUTABLE to use Conan's protoc (BEFORE find_package)
+# This prevents protobuf-conan-protoc-target.cmake from finding system protoc
+# ============================================================================
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/build/protobuf-release-armv8-data.cmake")
+    # Include Conan's protobuf data to get protobuf_PACKAGE_FOLDER_RELEASE
+    include("${CMAKE_CURRENT_SOURCE_DIR}/build/protobuf-release-armv8-data.cmake")
+    set(Protobuf_PROTOC_EXECUTABLE "${protobuf_PACKAGE_FOLDER_RELEASE}/bin/protoc" CACHE FILEPATH "Conan protoc" FORCE)
+endif()
+
+# Dependencies provided by Conan
 find_package(gRPC CONFIG REQUIRED)
 find_package(Protobuf CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
