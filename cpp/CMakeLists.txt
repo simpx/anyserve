@@ -8,16 +8,6 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 # Option to build Python extension
 option(BUILD_PYTHON_EXTENSION "Build pybind11 Python extension" ON)
 
-# ============================================================================
-# Pre-set Protobuf_PROTOC_EXECUTABLE to use Conan's protoc (BEFORE find_package)
-# This prevents protobuf-conan-protoc-target.cmake from finding system protoc
-# ============================================================================
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/build/protobuf-release-armv8-data.cmake")
-    # Include Conan's protobuf data to get protobuf_PACKAGE_FOLDER_RELEASE
-    include("${CMAKE_CURRENT_SOURCE_DIR}/build/protobuf-release-armv8-data.cmake")
-    set(Protobuf_PROTOC_EXECUTABLE "${protobuf_PACKAGE_FOLDER_RELEASE}/bin/protoc" CACHE FILEPATH "Conan protoc" FORCE)
-endif()
-
 # Dependencies provided by Conan
 find_package(gRPC CONFIG REQUIRED)
 find_package(Protobuf CONFIG REQUIRED)
@@ -45,13 +35,17 @@ if(NOT gRPC_CPP_PLUGIN_EXECUTABLE)
     get_target_property(gRPC_CPP_PLUGIN_EXECUTABLE gRPC::grpc_cpp_plugin IMPORTED_LOCATION)
 endif()
 
-# Use Conan's protoc - MUST match libprotobuf version
-set(PROTOC_EXECUTABLE ${Protobuf_PROTOC_EXECUTABLE})
-if(NOT PROTOC_EXECUTABLE)
+# Get protoc from Conan's protobuf package (protobuf_PACKAGE_FOLDER_RELEASE is set by CMakeDeps)
+# This ensures we use the protoc that matches the libprotobuf version
+if(protobuf_PACKAGE_FOLDER_RELEASE)
+    set(PROTOC_EXECUTABLE "${protobuf_PACKAGE_FOLDER_RELEASE}/bin/protoc")
+elseif(TARGET protobuf::protoc)
     get_target_property(PROTOC_EXECUTABLE protobuf::protoc IMPORTED_LOCATION_RELEASE)
     if(NOT PROTOC_EXECUTABLE)
         get_target_property(PROTOC_EXECUTABLE protobuf::protoc IMPORTED_LOCATION)
     endif()
+else()
+    message(FATAL_ERROR "Could not find protoc executable. Make sure Conan dependencies are installed.")
 endif()
 message(STATUS "Using protoc: ${PROTOC_EXECUTABLE}")
 
