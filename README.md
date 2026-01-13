@@ -1,62 +1,74 @@
-# AnyServe
+# anyserve
 
-High-performance model serving framework with C++ Dispatcher and Python Worker architecture, supporting the KServe v2 inference protocol.
+面向大规模 LLM 推理的 Serving Runtime。
 
-## Features
+## 项目状态
 
-- **🚀 High Performance**: C++ gRPC ingress for request routing and traffic handling
-- **🐍 Python Simplicity**: Write model handlers in pure Python with decorators
-- **🔌 KServe Compatible**: Full support for KServe v2 inference protocol
-- **📊 Multi-Model**: Serve multiple models with version support in a single deployment
-- **🔄 Dynamic Registration**: Workers register models at runtime via gRPC
-- **⚡ Unix Socket IPC**: High-speed inter-process communication between Ingress and Workers
+**POC 阶段** - 核心骨架已实现，正在开发 MVP 功能。
 
-## Architecture
+## 核心特性
+
+- **Capability 驱动**：基于任意 key-value 的请求路由，而非固定 model name
+- **Worker 动态启停**：根据负载动态管理 Worker，资源灵活复用
+- **控制流/数据流分离**：控制流走 KServe 协议，数据流走 Object System
+- **C++ Dispatcher + Python Worker**：高性能控制面 + 灵活执行面
+
+## 架构概览
 
 ```
-External Clients (gRPC)
-        ↓
-   C++ Dispatcher (Port 8000)
-   ├─ Model Registry
-   ├─ Request Router
-   └─ Worker Client
-        ↓ (Unix Socket)
-   Python Workers
-   └─ Model Handlers (@model decorator)
+┌──────────────────────────────────────────┐
+│            API Server (独立项目)          │
+│         基于 Capability 路由请求          │
+└──────────────────────┬───────────────────┘
+                       │
+          ┌────────────┼────────────┐
+          ↓            ↓            ↓
+┌──────────────┐ ┌──────────────┐ ┌──────────────┐
+│  Replica A   │ │  Replica B   │ │  Replica C   │
+│  (anyserve)  │ │  (anyserve)  │ │  (anyserve)  │
+│              │ │              │ │              │
+│ Dispatcher   │ │ Dispatcher   │ │ Dispatcher   │
+│     ↓        │ │     ↓        │ │     ↓        │
+│  Workers     │ │  Workers     │ │  Workers     │
+└──────────────┘ └──────────────┘ └──────────────┘
 ```
 
-AnyServe uses a **C++ Dispatcher + Python Worker** architecture:
-- **C++ Dispatcher**: Handles all external gRPC traffic, routes requests to appropriate workers
-- **Python Workers**: Independent processes running your model inference code
-- **Communication**: gRPC for management, Unix Domain Sockets for high-speed inference
+详细设计请参阅：
+- [架构设计](docs/architecture.md) - 概念、原则、分层
+- [运行时实现](docs/runtime.md) - 代码结构、协议、流程
+- [MVP 计划](docs/mvp.md) - 开发目标和任务列表
 
-For detailed architecture, see:
-- [System Architecture](docs/architecture.md) - Overall design and concepts
-- [Runtime Architecture](docs/runtime.md) - Implementation details
+## 快速开始
 
-## Quick Start
-
-### Prerequisites
+### 环境要求
 
 - Python 3.11+
-- C++ compiler with C++17 support
+- C++ 编译器（支持 C++17）
 - CMake 3.20+
-- Conan 2.0+ (for C++ dependencies)
+- Conan 2.0+
 
-### Installation
+### 安装
 
 ```bash
-# Install dependencies and build
+# 安装依赖并构建
 just setup
 just build
 
-# Install Python package
+# 安装 Python 包
 pip install -e python/
 ```
 
-### Example: Echo Model
+### 运行示例
 
-Create `my_app.py`:
+```bash
+# 启动 server
+python -m anyserve.cli examples.basic.app:app --port 8000 --workers 1
+
+# 测试
+python examples/basic/run_example.py
+```
+
+### 定义 Worker
 
 ```python
 from anyserve import AnyServe, ModelInferRequest, ModelInferResponse
@@ -65,12 +77,10 @@ app = AnyServe()
 
 @app.model("echo")
 def echo_handler(request: ModelInferRequest) -> ModelInferResponse:
-    """Echo back all inputs as outputs"""
     response = ModelInferResponse(
         model_name=request.model_name,
         id=request.id
     )
-
     for inp in request.inputs:
         out = response.add_output(
             name=f"output_{inp.name}",
@@ -78,137 +88,44 @@ def echo_handler(request: ModelInferRequest) -> ModelInferResponse:
             shape=inp.shape
         )
         out.contents = inp.contents
-
     return response
 ```
 
-### Run the Server
-
-```bash
-# Start server with 1 worker
-python -m anyserve.cli my_app:app --port 8000 --workers 1
-```
-
-### Test the Model
-
-```bash
-# Using the test client
-python examples/basic/run_example.py
-```
-
-Or use the Python client:
-
-```python
-import grpc
-from anyserve._proto import grpc_predict_v2_pb2
-from anyserve._proto import grpc_predict_v2_pb2_grpc
-
-channel = grpc.insecure_channel('localhost:8000')
-stub = grpc_predict_v2_pb2_grpc.GRPCInferenceServiceStub(channel)
-
-# Check server status
-server_live = stub.ServerLive(grpc_predict_v2_pb2.ServerLiveRequest())
-print(f"Server live: {server_live.live}")
-
-# Check model status
-model_ready = stub.ModelReady(
-    grpc_predict_v2_pb2.ModelReadyRequest(name="echo")
-)
-print(f"Model ready: {model_ready.ready}")
-
-# Make inference request
-request = grpc_predict_v2_pb2.ModelInferRequest()
-request.model_name = "echo"
-request.id = "test-1"
-
-input_tensor = request.inputs.add()
-input_tensor.name = "input"
-input_tensor.datatype = "INT32"
-input_tensor.shape.extend([3])
-input_tensor.contents.int_contents.extend([1, 2, 3])
-
-response = stub.ModelInfer(request)
-print(f"Response: {response}")
-```
-
-## Development
-
-### Project Structure
+## 项目结构
 
 ```
 anyserve/
-├── cpp/                    # C++ Dispatcher implementation
-│   ├── server/            # Core server components
-│   │   ├── anyserve_ingress.{cpp,hpp}   # Main ingress server
-│   │   ├── model_registry.{cpp,hpp}      # Model registry
-│   │   └── worker_client.{cpp,hpp}       # Unix socket client
-│   └── build/             # Build artifacts (gitignored)
-├── python/anyserve/       # Python library
-│   ├── cli.py            # CLI entry point
-│   ├── kserve.py         # KServe v2 protocol
-│   └── worker/           # Worker implementation
-├── proto/                 # Protocol definitions
-│   ├── grpc_predict_v2.proto      # KServe v2 protocol
-│   └── worker_management.proto     # Worker registration
-├── examples/             # Example applications
-│   └── basic/           # Basic examples
-├── docs/                # Documentation
-└── justfile            # Build and development commands
+├── cpp/                    # C++ Dispatcher
+│   └── server/             # 核心组件
+├── python/anyserve/        # Python Worker
+│   ├── cli.py              # CLI 入口
+│   ├── kserve.py           # KServe 协议
+│   └── worker/             # Worker 实现
+├── proto/                  # 协议定义
+├── examples/               # 示例
+└── docs/                   # 文档
+    ├── architecture.md     # 架构设计
+    ├── runtime.md          # 运行时实现
+    └── mvp.md              # MVP 计划
 ```
 
-### Build Commands
+## 开发
 
 ```bash
-# Setup environment (install Conan dependencies)
-just setup
-
-# Build C++ components
-just build
-
-# Clean build artifacts
-just clean
-
-# Run tests (coming soon)
-# just test
+just setup    # 安装依赖
+just build    # 构建
+just clean    # 清理
 ```
 
-### Documentation
+## 文档
 
-- [System Architecture](docs/architecture.md) - High-level system design
-- [Runtime Architecture](docs/runtime.md) - Implementation details and component interactions
-- [MVP Specification](docs/mvp.md) - Project scope and goals
-- [Agent Guide](agents.md) - AI assistant collaboration guide
-
-## Examples
-
-See the [examples/](examples/) directory for complete examples:
-
-- `basic/` - Basic model serving with echo, add, and classifier models
-- `multi_stage/` - Multi-stage pipelines (placeholder for future)
-- `streaming/` - Streaming responses (placeholder for future)
-
-## Contributing
-
-This project uses AI-assisted development. See [agents.md](agents.md) for collaboration guidelines.
+| 文档 | 内容 |
+|------|------|
+| [architecture.md](docs/architecture.md) | 架构设计、核心概念、设计原则 |
+| [runtime.md](docs/runtime.md) | 实现细节、代码结构、协议 |
+| [mvp.md](docs/mvp.md) | MVP 目标、当前状态、开发计划 |
+| [agents.md](agents.md) | AI 助手协作指南 |
 
 ## License
 
-[Add your license here]
-
-## Status
-
-✅ **Core Features Complete**
-- C++ Dispatcher server with gRPC and Unix Socket support
-- Python Worker with KServe v2 protocol
-- Dynamic model registration
-- Multi-model serving with versioning
-
-🚧 **In Progress**
-- Performance optimization
-- Monitoring and metrics
-- Advanced load balancing
-
-📋 **Planned**
-- Streaming inference support
-- Model auto-scaling
-- Distributed deployment
+[待定]
