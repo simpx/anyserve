@@ -3,9 +3,13 @@ KServe v2 Inference Protocol support for AnyServe.
 
 This module provides Python wrappers for KServe's ModelInferRequest/Response
 and a simple decorator-based API for defining model handlers.
+
+Supports both:
+- @app.model("name") - legacy model-based routing
+- @app.capability(type="chat", model="llama-70b") - capability-based routing
 """
 
-from typing import List, Optional, Callable, Dict, Any as PyAny
+from typing import List, Optional, Callable, Dict, Any as PyAny, Union
 from dataclasses import dataclass, field
 
 
@@ -185,11 +189,112 @@ class ModelInferResponse:
 
 
 # =============================================================================
+# Context and Capability Support
+# =============================================================================
+
+@dataclass
+class Capability:
+    """
+    Represents a Capability with key-value attributes.
+
+    Examples:
+        Capability(type="chat", model="llama-70b")
+        Capability(type="embed")
+    """
+    attributes: Dict[str, PyAny] = field(default_factory=dict)
+
+    def __init__(self, **kwargs):
+        self.attributes = kwargs
+
+    def matches(self, query: Dict[str, PyAny]) -> bool:
+        """Check if this capability matches a query."""
+        for key, value in query.items():
+            if key not in self.attributes:
+                return False
+            if self.attributes[key] != value:
+                return False
+        return True
+
+    def to_dict(self) -> Dict[str, PyAny]:
+        return self.attributes.copy()
+
+    def get(self, key: str, default: PyAny = None) -> PyAny:
+        return self.attributes.get(key, default)
+
+    def __repr__(self):
+        attrs = ", ".join(f"{k}={v!r}" for k, v in self.attributes.items())
+        return f"Capability({attrs})"
+
+
+class Context:
+    """
+    Context object passed to capability handlers.
+
+    Provides access to:
+    - objects: ObjectStore instance for creating/reading objects
+    - call: Function to call other capabilities
+    - replica_id: ID of the current replica
+    - capability: The capability that matched this handler
+    """
+
+    def __init__(
+        self,
+        objects=None,
+        call_func: Optional[Callable] = None,
+        replica_id: Optional[str] = None,
+        capability: Optional[Capability] = None,
+    ):
+        self._objects = objects
+        self._call_func = call_func
+        self.replica_id = replica_id
+        self.capability = capability
+
+    @property
+    def objects(self):
+        """Access the ObjectStore for creating/reading objects."""
+        if self._objects is None:
+            raise RuntimeError(
+                "ObjectStore not available. Make sure --object-store is configured."
+            )
+        return self._objects
+
+    def call(
+        self,
+        capability: Dict[str, PyAny],
+        inputs: Dict[str, PyAny],
+        **kwargs
+    ):
+        """
+        Call another capability (cross-Replica call).
+
+        Args:
+            capability: Capability query (e.g., {"type": "embed"})
+            inputs: Input data for the call
+            **kwargs: Additional options
+
+        Returns:
+            Response from the target capability handler
+        """
+        if self._call_func is None:
+            raise RuntimeError(
+                "Cross-Replica call not available. Make sure --api-server is configured."
+            )
+        return self._call_func(capability, inputs, **kwargs)
+
+
+# =============================================================================
 # Model Registry and Decorator
 # =============================================================================
 
+# Type for handler functions
+HandlerFunc = Callable[[ModelInferRequest], ModelInferResponse]
+CapabilityHandlerFunc = Callable[[ModelInferRequest, Context], ModelInferResponse]
+
 # Global registry: (model_name, model_version) -> handler_function
-_model_registry: Dict[tuple, Callable[[ModelInferRequest], ModelInferResponse]] = {}
+_model_registry: Dict[tuple, HandlerFunc] = {}
+
+# Global capability registry: Capability -> handler_function
+_capability_registry: Dict[str, tuple] = {}  # capability_key -> (Capability, handler)
 
 
 class AnyServe:
@@ -198,11 +303,20 @@ class AnyServe:
 
     This class provides the decorator-based API for defining model handlers.
 
-    Usage:
+    Usage (legacy model-based):
         app = anyserve.AnyServe()
 
         @app.model("my_model")
         def handler(request: ModelInferRequest) -> ModelInferResponse:
+            return response
+
+    Usage (capability-based):
+        app = anyserve.AnyServe()
+
+        @app.capability(type="chat", model="llama-70b")
+        def chat_handler(request: ModelInferRequest, context: Context) -> ModelInferResponse:
+            # context.objects for ObjectStore access
+            # context.call() for cross-Replica calls
             return response
 
         if __name__ == "__main__":
@@ -210,7 +324,10 @@ class AnyServe:
     """
 
     def __init__(self):
-        self._local_registry: Dict[tuple, Callable[[ModelInferRequest], ModelInferResponse]] = {}
+        # Legacy model registry: (model_name, model_version) -> handler
+        self._local_registry: Dict[tuple, HandlerFunc] = {}
+        # Capability registry: List of (Capability, handler, uses_context)
+        self._capability_handlers: List[tuple] = []
 
     def model(self, name: str, version: Optional[str] = None):
         """
@@ -241,6 +358,78 @@ class AnyServe:
             print(f"[AnyServe] Registered model handler: {name}" + (f" (version={version})" if version else ""))
             return func
         return decorator
+
+    def capability(self, **capability_attrs):
+        """
+        Decorator to register a capability handler.
+
+        This is the recommended way to define handlers in MVP.
+        The handler receives both request and context.
+
+        Args:
+            **capability_attrs: Key-value pairs defining the capability
+                               (e.g., type="chat", model="llama-70b")
+
+        Usage:
+            @app.capability(type="chat", model="llama-70b")
+            def chat_handler(request: ModelInferRequest, context: Context) -> ModelInferResponse:
+                # Access ObjectStore
+                data = context.objects.get(request.inputs[0].bytes_contents[0])
+
+                # Call another capability
+                result = context.call(
+                    capability={"type": "embed"},
+                    inputs={"data": obj_ref}
+                )
+
+                return response
+
+            @app.capability(type="embed")
+            def embed_handler(request, context):
+                ...
+        """
+        import inspect
+
+        cap = Capability(**capability_attrs)
+
+        def decorator(func):
+            # Check if function expects context parameter
+            sig = inspect.signature(func)
+            params = list(sig.parameters.keys())
+            uses_context = len(params) >= 2
+
+            # Register the handler
+            self._capability_handlers.append((cap, func, uses_context))
+
+            # Also register in legacy model registry for backward compatibility
+            # Use type as model_name if available
+            model_name = capability_attrs.get("type", "unknown")
+            model_version = capability_attrs.get("model", None)
+            key = (model_name, model_version)
+            self._local_registry[key] = func
+            _model_registry[key] = func
+
+            cap_str = ", ".join(f"{k}={v!r}" for k, v in capability_attrs.items())
+            print(f"[AnyServe] Registered capability handler: {cap_str}")
+            return func
+
+        return decorator
+
+    def get_capabilities(self) -> List[Dict[str, PyAny]]:
+        """Get list of all registered capabilities as dicts."""
+        return [cap.to_dict() for cap, _, _ in self._capability_handlers]
+
+    def find_handler(self, capability_query: Dict[str, PyAny]) -> Optional[tuple]:
+        """
+        Find a handler that matches the capability query.
+
+        Returns:
+            Tuple of (handler_func, uses_context) if found, None otherwise
+        """
+        for cap, handler, uses_context in self._capability_handlers:
+            if cap.matches(capability_query):
+                return (handler, uses_context, cap)
+        return None
 
     def run(self, host: str = "0.0.0.0", port: int = 8000, **kwargs):
         """
