@@ -14,6 +14,15 @@ dependencies = [
     "grpcio-tools>=1.60.0",
     "requests>=2.31.0",
     "click>=8.0.0",
+    "httpx>=0.25.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.0.0",
+    "httpx>=0.25.0",
 ]
 
 [project.scripts]
@@ -35,7 +44,27 @@ cmake.args = [
 ]
 wheel.packages = ["python/anyserve"]
 
-[dependency-groups]
-dev = [
-    "pytest>=7.0.0",
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+markers = [
+    "p0: Priority 0 (critical) tests",
+    "p1: Priority 1 (high) tests",
+    "p2: Priority 2 (medium) tests",
+    "slow: Slow running tests",
+    "integration: Integration tests",
+]
+
+[tool.coverage.run]
+source = ["python/anyserve"]
+omit = ["*/_proto/*", "*/tests/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise NotImplementedError",
 ]
