@@ -244,55 +244,23 @@ class AnyServe:
 
     def run(self, host: str = "0.0.0.0", port: int = 8000, **kwargs):
         """
-        Run the AnyServe server in development mode.
+        Run the AnyServe server.
 
-        This is for local testing. For production, use the CLI:
-            anyserve your_module:app
+        For production, use the CLI instead:
+            anyserve your_module:app --port 8000
 
         Args:
             host: Host to bind to
             port: Port to bind to
             **kwargs: Additional options (for future use)
         """
-        print(f"[AnyServe] Starting development server on {host}:{port}")
+        print(f"[AnyServe] To start the server, use the CLI:")
+        print(f"    anyserve <module>:app --host {host} --port {port}")
+        print()
         print(f"[AnyServe] Registered {len(self._local_registry)} model(s):")
         for (name, version) in self._local_registry.keys():
             version_str = f" (version={version})" if version else ""
             print(f"  - {name}{version_str}")
-
-        # Start C++ gRPC server
-        try:
-            from anyserve.kserve_dispatcher import KServeDispatcher
-            from anyserve.core import init as core_init
-
-            dispatcher = KServeDispatcher()
-            core = core_init(
-                dispatcher=dispatcher,
-                root_dir="./tmp_anyserve",
-                instance_id=f"kserve-worker-{port}",
-                port=port,
-            )
-
-            print(f"[AnyServe] gRPC server started on {host}:{port}")
-            print("[AnyServe] Press Ctrl+C to stop")
-
-            # Keep server running
-            try:
-                import time
-                while True:
-                    time.sleep(1)
-            except KeyboardInterrupt:
-                print("\n[AnyServe] Shutting down...")
-
-        except ImportError as e:
-            print(f"[AnyServe] Warning: C++ extension not available: {e}")
-            print("[AnyServe] Running in stub mode (no actual gRPC server)")
-            try:
-                import time
-                while True:
-                    time.sleep(1)
-            except KeyboardInterrupt:
-                print("\n[AnyServe] Shutting down...")
 
 
 def model(name: str, version: Optional[str] = None):
