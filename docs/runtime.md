@@ -1,432 +1,544 @@
-# AnyServe Runtime Architecture
+# anyserve Runtime Implementation
 
-> This document describes the runtime architecture and design decisions of AnyServe.
+> 本文档描述 anyserve 的运行时实现细节，是 [architecture.md](./architecture.md) 的补充。
+>
+> architecture.md 描述"是什么"和"为什么"，本文档描述"怎么实现"。
 
-## Overview
+---
 
-AnyServe uses a **C++ Dispatcher + Python Worker** architecture where:
-- **C++ Dispatcher** is the main process handling all external gRPC traffic
-- **Python Workers** are subprocesses that execute model inference logic
-- Communication happens via Unix Domain Sockets for high-performance IPC
+## 1. 当前实现状态
 
-## Current Runtime Architecture
+### 已实现
 
-### System Components
+- ✅ C++ Dispatcher 基础框架
+- ✅ Python Worker 基础框架
+- ✅ KServe v2 协议支持
+- ✅ Unix Socket IPC
+- ✅ Model Registry（基于 model name）
+- ✅ Worker 注册机制
 
-```
-┌─────────────────────────────────────┐
-│     External gRPC Clients           │
-│   (KServe v2 Protocol, Port 8000)   │
-└───────────────┬─────────────────────┘
-                │
-    ┌───────────▼──────────────────────────────┐
-    │      C++ Dispatcher (Main Process)          │
-    │                                           │
-    │  ┌────────────────────────────────────┐  │
-    │  │      Model Registry                │  │
-    │  │  (model name → worker address)     │  │
-    │  │  - echo → /tmp/worker-1.sock       │  │
-    │  │  - add → /tmp/worker-1.sock        │  │
-    │  │  - classifier:v1 → /tmp/worker-2.sock│ │
-    │  └────────────────────────────────────┘  │
-    │                                           │
-    │  ┌────────────────────────────────────┐  │
-    │  │    KServe v2 gRPC Services         │  │
-    │  │  - ModelInfer (request routing)    │  │
-    │  │  - ServerLive / ServerReady        │  │
-    │  │  - ModelReady                      │  │
-    │  └────────────────────────────────────┘  │
-    │                                           │
-    │  ┌────────────────────────────────────┐  │
-    │  │   Worker Management (Port 9000)    │  │
-    │  │  - RegisterModel (from workers)    │  │
-    │  │  - Heartbeat                       │  │
-    │  └────────────────────────────────────┘  │
-    └───────────┬─────────────┬─────────────────┘
-                │             │
-    ┌───────────▼──────┐  ┌───▼──────────────┐
-    │  Python Worker 1 │  │  Python Worker 2 │
-    │  @model("echo")  │  │  @model("cls:v1")│
-    │  @model("add")   │  │  @model("cls:v2")│
-    └──────────────────┘  └──────────────────┘
-    Unix Socket           Unix Socket
-    /tmp/worker-1.sock    /tmp/worker-2.sock
-```
+### 待实现
 
-### Request Flow
+- ⏳ Capability 路由（当前用 model name 代替）
+- ⏳ Worker Manager 动态启停
+- ⏳ Request Queues / SLO 调度
+- ⏳ Object System
+- ⏳ Delegation
 
-#### 1. Model Inference Request (Model Exists)
-```
-Client → C++ Dispatcher (port 8000)
-         ↓ Lookup model in registry
-         ↓ Found: echo → /tmp/worker-1.sock
-         ↓ Forward request via Unix Socket
-         ↓
-      Python Worker
-         ↓ Deserialize protobuf
-         ↓ Execute handler: echo_model(request)
-         ↓ Serialize response
-         ↓
-      C++ Dispatcher
-         ↓ Forward response to client
-         ↓
-Client ← Response
-```
+---
 
-#### 2. Model Not Found (Fast Rejection)
-```
-Client → C++ Dispatcher
-         ↓ Lookup model in registry
-         ↓ Not Found
-         ↓ Return gRPC NOT_FOUND immediately
-         ↓ (No Python involvement)
-Client ← Error (NOT_FOUND)
-```
+## 2. 进程模型
 
-#### 3. Server Health Check
-```
-Client → C++ Dispatcher: ServerLive
-         ↓ Check Dispatcher health
-         ↓ Return {live: true}
-         ↓ (No Python involvement)
-Client ← Response
-```
-
-### Key Components
-
-#### C++ Dispatcher
-
-**Responsibilities:**
-- Accept all external gRPC requests (KServe v2 protocol)
-- Maintain thread-safe model registry
-- Route inference requests to appropriate workers
-- Handle worker registration and health checks
-- Fast-fail on model not found
-
-**Core Classes:**
-- `AnyServeDispatcher` - Main gRPC server implementing KServe v2 services
-- `ModelRegistry` - Thread-safe mapping: model_key → worker_address
-- `WorkerClient` - Unix socket client for worker communication
-
-**File Locations:**
-- `cpp/server/anyserve_dispatcher.{cpp,hpp}` - Main ingress implementation
-- `cpp/server/model_registry.{cpp,hpp}` - Model routing table
-- `cpp/server/worker_client.{cpp,hpp}` - Worker IPC client
-- `cpp/server/main_v2.cpp` - Standalone executable entry point
-
-#### Python Worker
-
-**Responsibilities:**
-- Execute model inference logic
-- Register models with ingress on startup
-- Listen for inference requests via Unix socket
-- Handle KServe v2 request/response serialization
-
-**Core Classes:**
-- `AnyServe` - Application class with @model decorator
-- `Worker` - Worker process managing socket server and model handlers
-
-**File Locations:**
-- `python/anyserve/__init__.py` - Public API
-- `python/anyserve/worker/__main__.py` - Worker process implementation
-- `python/anyserve/kserve.py` - KServe v2 protocol implementation
-
-## Why C++ Dispatcher Instead of Python + C++ Extension?
-
-### Design Decision: C++ as Main Process
-
-The architecture intentionally uses **C++ as the main process** rather than Python with C++ extensions. This is a critical design decision for several reasons:
-
-#### 1. Advanced Traffic Management (Current & Future)
-
-The ingress needs to handle complex request routing logic:
-- **Request queuing**: Buffer requests during worker overload
-- **Retry logic**: Automatically retry failed requests
-- **Fallback routing**: Route to backup workers or models
-- **Load balancing**: Distribute requests across multiple workers
-- **Circuit breaking**: Detect and isolate failing workers
-
-These operations require low-latency, high-throughput handling that's best implemented in C++. Doing this in Python would introduce significant overhead and complexity.
-
-#### 2. Dynamic Worker Management
-
-The system needs to support:
-- **Worker registration**: Workers can join/leave at runtime
-- **Worker discovery**: Automatically detect available workers
-- **Health monitoring**: Track worker health and remove dead workers
-- **Resource scaling**: Add/remove workers based on load
-
-C++ provides better control over process lifecycle, socket management, and concurrent operations needed for these features.
-
-#### 3. Zero-Python Dependency for Core Operations
-
-Many operations don't need Python at all:
-- Model not found → return 404 immediately
-- Server health checks → respond without Python
-- Request routing → look up registry and forward
-
-With C++ as the main process, these operations are handled natively without crossing language boundaries.
-
-#### 4. Performance Characteristics
-
-**C++ Dispatcher + Python Worker:**
-- One language boundary crossing per inference request
-- No GIL contention for routing logic
-- Native thread support for concurrent request handling
-- Minimal serialization overhead (direct protobuf handling)
-
-**Python Main + C++ Extension (Alternative):**
-- Multiple language boundary crossings (Python → C++ → Python)
-- GIL limitations for request routing
-- Complex state management across languages
-- Higher serialization overhead
-
-#### 5. Operational Robustness
-
-- **Isolation**: Worker crashes don't affect the ingress
-- **Restart**: Workers can restart without downtime
-- **Upgrades**: Update worker code without restarting ingress
-- **Debugging**: Simpler to debug and profile separate processes
-
-### Architecture Comparison
-
-| Aspect | C++ Dispatcher (Current) | Python Main + C++ Ext (Alternative) |
-|--------|----------------------|-------------------------------------|
-| Main Process | C++ | Python |
-| Request Entry | C++ gRPC | Python gRPC → C++ |
-| Model Registry | C++ (thread-safe) | Python (GIL) |
-| Routing Logic | C++ | Python |
-| Worker Communication | C++ → Unix Socket → Python | Python → C++ → Python |
-| Performance | High (one boundary) | Medium (multiple boundaries) |
-| Scalability | Excellent (no GIL) | Limited (GIL contention) |
-| Advanced Features | Native support | Complex to implement |
-| Worker Isolation | Strong | Weak |
-
-## Protocol: Worker Registration
-
-### Startup Sequence
+### 单机场景
 
 ```
-1. C++ Dispatcher starts
-   - Start gRPC server on port 8000
-   - Start management server on port 9000
-   - Initialize empty model registry
-
-2. Python Worker starts
-   - Load all @model decorated functions
-   - Start Unix socket server (e.g., /tmp/worker-abc123.sock)
-   - Connect to ingress management port (9000)
-   - For each model:
-       → Send RegisterModel(model_name, version, worker_address)
-       → Dispatcher updates registry
-   - Wait for inference requests
-
-3. Client sends inference request
-   - C++ Dispatcher receives ModelInferRequest
-   - Lookup model in registry
-   - Forward to worker via Unix socket
-   - Return response to client
+┌──────────────────────────────────────────────────────────────────┐
+│                        anyserve Replica                           │
+│                                                                   │
+│   ┌───────────────────────────────────────────────────────────┐  │
+│   │              Dispatcher (C++, main process)                │  │
+│   │                                                            │  │
+│   │   Port 8000: KServe v2 gRPC (外部请求)                     │  │
+│   │   Port 9000: Worker Management gRPC (内部注册)             │  │
+│   │                                                            │  │
+│   │   ┌────────────────┐  ┌────────────────────────────────┐  │  │
+│   │   │ ModelRegistry  │  │ WorkerClient (连接池)           │  │  │
+│   │   │ model → worker │  │ Unix Socket → Workers          │  │  │
+│   │   └────────────────┘  └────────────────────────────────┘  │  │
+│   │                                                            │  │
+│   └───────────────────────────────────────────────────────────┘  │
+│                               │                                   │
+│                    Unix Domain Socket                             │
+│                               │                                   │
+│          ┌────────────────────┼────────────────────┐             │
+│          ↓                    ↓                    ↓             │
+│   ┌────────────────┐   ┌────────────────┐   ┌────────────────┐  │
+│   │  Worker 0      │   │  Worker 1      │   │  Worker 2      │  │
+│   │  (Python)      │   │  (Python)      │   │  (Python)      │  │
+│   │                │   │                │   │                │  │
+│   │  models:       │   │  models:       │   │  models:       │  │
+│   │  - echo        │   │  - classifier  │   │  - heavy_llm   │  │
+│   │  - add         │   │                │   │                │  │
+│   │                │   │                │   │                │  │
+│   │  socket:       │   │  socket:       │   │  socket:       │  │
+│   │  /tmp/w0.sock  │   │  /tmp/w1.sock  │   │  /tmp/w2.sock  │  │
+│   └────────────────┘   └────────────────┘   └────────────────┘  │
+│                                                                   │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
-### Worker Registration Protocol
+### 进程职责
+
+| 进程 | 语言 | 职责 |
+|------|------|------|
+| **Dispatcher** | C++ | 接收外部请求、路由、Worker 管理、连接池 |
+| **Worker** | Python | 执行推理、注册 model/capability |
+
+---
+
+## 3. Dispatcher 实现
+
+### 3.1 核心类
+
+```
+cpp/server/
+├── anyserve_dispatcher.{cpp,hpp}   # 主入口，gRPC server
+├── model_registry.{cpp,hpp}        # model → worker 映射
+├── worker_client.{cpp,hpp}         # Unix Socket 客户端 + 连接池
+├── process_supervisor.{cpp,hpp}    # Worker 进程管理（待完善）
+└── main.cpp                        # 可执行文件入口
+```
+
+### 3.2 AnyserveDispatcher
+
+主类，负责：
+- 启动两个 gRPC server（外部端口 + 管理端口）
+- 管理 ModelRegistry 和 WorkerClient
+
+```cpp
+class AnyserveDispatcher {
+    int port_;                      // 8000: KServe v2
+    int management_port_;           // 9000: Worker 注册
+
+    ModelRegistry registry_;        // model → worker 映射
+    WorkerClient worker_client_;    // Unix Socket 连接池
+
+    std::unique_ptr<grpc::Server> server_;
+    std::unique_ptr<grpc::Server> management_server_;
+};
+```
+
+### 3.3 ModelRegistry
+
+线程安全的路由表：
+
+```cpp
+class ModelRegistry {
+    // 主索引：model_key (name:version) → worker_address
+    std::unordered_map<std::string, std::string> model_to_worker_;
+
+    // 反向索引：worker_id → [model_keys]
+    std::unordered_map<std::string, std::vector<std::string>> worker_to_models_;
+
+    // 接口
+    void register_model(name, version, worker_address, worker_id);
+    std::optional<std::string> lookup_worker(name, version);
+    size_t unregister_worker(worker_id);
+};
+```
+
+**注**：当前使用 `model_name:version` 作为 key，未来会改为 capability key-value 匹配。
+
+### 3.4 WorkerClient
+
+Unix Socket 连接池：
+
+```cpp
+class WorkerClient {
+    // 连接池：socket_path → ConnectionPool
+    std::unordered_map<std::string, ConnectionPool> pools_;
+
+    // 转发请求
+    bool forward_request(
+        const std::string& worker_address,
+        const ModelInferRequest& request,
+        ModelInferResponse& response
+    );
+};
+```
+
+**连接池策略**：
+- 每个 Worker 最多 10 个连接
+- 请求完成后归还连接
+- 支持并发请求
+
+---
+
+## 4. Worker 实现
+
+### 4.1 核心类
+
+```
+python/anyserve/
+├── __init__.py             # 公开 API
+├── kserve.py               # KServe 协议 + AnyServe 类
+├── cli.py                  # CLI 入口
+└── worker/
+    ├── __main__.py         # Worker 进程主逻辑
+    ├── loader.py           # 模块加载
+    └── client.py           # gRPC 客户端（测试用）
+```
+
+### 4.2 AnyServe 类
+
+用户定义 model handler 的入口：
+
+```python
+class AnyServe:
+    _local_registry: Dict[tuple, Callable]  # (name, version) → handler
+
+    def model(self, name: str, version: str = None):
+        """装饰器，注册 model handler"""
+        def decorator(func):
+            self._local_registry[(name, version)] = func
+            return func
+        return decorator
+```
+
+### 4.3 Worker 类
+
+Worker 进程的核心逻辑：
+
+```python
+class Worker:
+    def __init__(self, app, worker_id, ingress_address, worker_port):
+        self.app = app
+        self.socket_path = f"/tmp/anyserve-worker-{worker_id}.sock"
+
+    def register_to_ingress(self):
+        """启动时向 Dispatcher 注册所有 model"""
+        for (model_name, version), handler in self.app._local_registry.items():
+            # 通过 gRPC 调用 Dispatcher 的 RegisterModel
+
+    def serve(self):
+        """Unix Socket 服务器主循环"""
+        sock = socket.socket(AF_UNIX, SOCK_STREAM)
+        sock.bind(self.socket_path)
+        while running:
+            conn = sock.accept()
+            self.handle_connection(conn)
+
+    def handle_connection(self, conn):
+        """处理单个请求"""
+        # 1. 读取请求长度 (4 bytes)
+        # 2. 读取 protobuf 数据
+        # 3. 调用 handler
+        # 4. 发送响应
+```
+
+---
+
+## 5. 通信协议
+
+### 5.1 外部协议：KServe v2
+
+外部客户端通过 KServe v2 gRPC 协议访问：
+
+```protobuf
+// proto/grpc_predict_v2.proto
+service GRPCInferenceService {
+    rpc ServerLive(ServerLiveRequest) returns (ServerLiveResponse);
+    rpc ServerReady(ServerReadyRequest) returns (ServerReadyResponse);
+    rpc ModelReady(ModelReadyRequest) returns (ModelReadyResponse);
+    rpc ModelInfer(ModelInferRequest) returns (ModelInferResponse);
+}
+```
+
+### 5.2 内部协议：Worker Management
+
+Worker 向 Dispatcher 注册：
 
 ```protobuf
 // proto/worker_management.proto
 service WorkerManagement {
     rpc RegisterModel(RegisterModelRequest) returns (RegisterModelResponse);
+    rpc UnregisterModel(UnregisterModelRequest) returns (UnregisterModelResponse);
     rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
 }
 
 message RegisterModelRequest {
     string model_name = 1;
     string model_version = 2;
-    string worker_address = 3;  // e.g., "unix:///tmp/worker-123.sock"
+    string worker_address = 3;  // "unix:///tmp/worker.sock"
     string worker_id = 4;
 }
 ```
 
-## Communication: Unix Domain Sockets
+### 5.3 IPC 协议：Unix Socket
 
-### Why Unix Sockets?
+Dispatcher 与 Worker 之间的请求转发：
 
-- **High Performance**: Faster than TCP for local IPC (no network stack overhead)
-- **Zero Network Latency**: Direct kernel-level communication
-- **Simple**: Point-to-point connection model
-- **Secure**: Filesystem permissions control access
-
-### Socket Protocol
-
-**Request Format (Dispatcher → Worker):**
 ```
-[4 bytes: message length] [N bytes: protobuf ModelInferRequest]
-```
-
-**Response Format (Worker → Dispatcher):**
-```
-[4 bytes: message length] [N bytes: protobuf ModelInferResponse]
+┌─────────────────────────────────────────────────┐
+│              Unix Socket Message                 │
+│                                                  │
+│   [4 bytes]           [N bytes]                  │
+│   message length      protobuf data              │
+│   (big-endian)        (ModelInferRequest/Response)│
+│                                                  │
+└─────────────────────────────────────────────────┘
 ```
 
-### Connection Lifecycle
-
-Currently, the system uses **single-use connections**:
-1. Dispatcher receives request
-2. Dispatcher connects to worker socket
-3. Send request, receive response
-4. Close connection
-
-**Future Optimization:** Connection pooling for better performance (see Roadmap).
-
-## Future Roadmap
-
-### 1. Zero-Copy Communication (C++ ↔ Python)
-
-**Current State:**
-- Protobuf serialization/deserialization at language boundary
-- Memory copy overhead for tensor data
-
-**Future Goal:**
-- Share memory directly between C++ and Python
-- Use shared memory segments for tensor data
-- Pass pointers instead of copying data
-- Minimal serialization (only metadata)
-
-**Benefits:**
-- Eliminate memory copy overhead
-- Reduce latency for large tensors
-- Lower memory footprint
-- Higher throughput
-
-**Implementation Approach:**
-- Use `mmap` or shared memory for tensor buffers
-- Pass file descriptors via Unix socket ancillary data
-- Use Apache Arrow or similar zero-copy format
-- Python side: numpy arrays backed by shared memory
-
-### 2. Advanced Request Management
-
-**Request Queuing:**
-- Per-model request queues with configurable depth
-- Priority-based queue management
-- Backpressure handling
-
-**Retry & Fallback:**
-- Automatic retry on worker failure
-- Fallback to alternative workers or models
-- Exponential backoff strategies
-
-**Circuit Breaking:**
-- Detect failing workers and stop routing to them
-- Automatic recovery detection
-- Health-based routing decisions
-
-### 3. Connection Pooling
-
-**Current:** Single-use Unix socket connections
-**Future:** Connection pool per worker
-- Reuse connections for multiple requests
-- Configurable pool size
-- Connection health monitoring
-- Automatic connection recycling
-
-### 4. Dynamic Worker Management
-
-**Worker Discovery:**
-- Automatic detection of new workers
-- Service discovery integration (Consul, etcd)
-- DNS-based worker resolution
-
-**Auto-scaling:**
-- Monitor request queue depth and latency
-- Automatically spawn/kill workers
-- Load-based scaling policies
-- Resource-aware scheduling
-
-**Worker Health:**
-- Continuous health monitoring
-- Automatic removal of dead workers
-- Graceful worker shutdown
-- Zero-downtime worker updates
-
-### 5. Distributed Deployment
-
-**Multi-node Support:**
-- Dispatcher can forward to remote workers (TCP/gRPC)
-- Worker pool spanning multiple machines
-- Location-aware routing
-
-**High Availability:**
-- Multiple ingress instances with load balancing
-- Worker redundancy and failover
-- Shared model registry (Redis, etcd)
-
-### 6. Observability
-
-**Metrics:**
-- Request latency histograms (p50, p95, p99)
-- Worker utilization and queue depth
-- Model-level throughput and error rates
-- Resource usage (CPU, memory, GPU)
-
-**Tracing:**
-- Distributed tracing support (OpenTelemetry)
-- Request flow visualization
-- Performance bottleneck identification
-
-**Logging:**
-- Structured logging with correlation IDs
-- Centralized log aggregation
-- Debug mode with detailed protocol logs
-
-## Development Notes
-
-### Building the Project
-
-```bash
-# Setup dependencies
-just setup
-
-# Build C++ ingress and Python package (includes protobuf generation)
-just build
-
-# Clean all artifacts
-just clean
-```
-
-### Generated Artifacts
-
-The build process generates protobuf files in two locations:
-- `python/anyserve/_proto/` - Used by worker server (kserve.py, worker/__main__.py)
-- `python/anyserve/worker/proto/` - Used by gRPC client (worker/client.py)
-
-Both are generated from the same proto files but serve different purposes in the codebase.
-
-### Key Files
-
-**C++ Implementation:**
-- `cpp/server/main_v2.cpp` - Dispatcher entry point
-- `cpp/server/anyserve_dispatcher.{cpp,hpp}` - gRPC server implementation
-- `cpp/server/model_registry.{cpp,hpp}` - Model routing table
-- `cpp/server/worker_client.{cpp,hpp}` - Unix socket client
-
-**Python Implementation:**
-- `python/anyserve/cli.py` - CLI entry point for starting server
-- `python/anyserve/worker/__main__.py` - Worker process
-- `python/anyserve/kserve.py` - KServe v2 protocol implementation
-- `python/anyserve/worker/client.py` - gRPC client for testing
-
-**Protocol Definitions:**
-- `proto/grpc_predict_v2.proto` - KServe v2 inference protocol
-- `proto/worker_management.proto` - Worker registration protocol
-
-## Design Philosophy
-
-1. **Separation of Concerns**: C++ handles routing, Python handles inference
-2. **Fail Fast**: Reject invalid requests at the ingress without Python
-3. **Isolation**: Worker failures don't affect the ingress or other workers
-4. **Performance**: Minimize cross-language overhead and memory copies
-5. **Scalability**: Support multiple workers and horizontal scaling
-6. **Future-Ready**: Architecture supports advanced features like zero-copy and distributed deployment
+- 请求：`length + ModelInferRequest (protobuf)`
+- 响应：`length + ModelInferResponse (protobuf)`
 
 ---
 
-**Last Updated**: 2026-01-13
+## 6. 请求流程
+
+### 6.1 完整路径
+
+```
+1. Client 发送 gRPC ModelInferRequest
+   │
+   ↓
+2. Dispatcher (Port 8000) 接收
+   │
+   ├── 解析 model_name, model_version
+   │
+   ├── ModelRegistry.lookup_worker(name, version)
+   │   │
+   │   ├── 找到 → worker_address (unix:///tmp/xxx.sock)
+   │   │
+   │   └── 未找到 → 返回 NOT_FOUND（不涉及 Python）
+   │
+   ↓
+3. WorkerClient.forward_request(worker_address, request)
+   │
+   ├── 从连接池获取连接
+   ├── 序列化 request → protobuf bytes
+   ├── 发送：length + data
+   │
+   ↓
+4. Worker 接收
+   │
+   ├── 解析 protobuf → ModelInferRequest
+   ├── dispatch_request(request)
+   │   │
+   │   ├── 查找 handler: _local_registry[(name, version)]
+   │   └── 调用 handler(request) → response
+   │
+   ├── 序列化 response → protobuf bytes
+   └── 发送：length + data
+   │
+   ↓
+5. Dispatcher 返回响应给 Client
+```
+
+### 6.2 快速失败路径
+
+Model 不存在时，Dispatcher 直接返回错误，不涉及 Python：
+
+```
+Client → Dispatcher
+            │
+            ├── ModelRegistry.lookup_worker() → nullopt
+            │
+            └── 返回 gRPC NOT_FOUND
+            │
+Client ← Error
+```
+
+---
+
+## 7. Worker 定义方式
+
+### 7.1 当前：@app.model 装饰器
+
+```python
+from anyserve import AnyServe, ModelInferRequest, ModelInferResponse
+
+app = AnyServe()
+
+@app.model("echo")
+def echo_handler(request: ModelInferRequest) -> ModelInferResponse:
+    response = ModelInferResponse(
+        model_name=request.model_name,
+        id=request.id
+    )
+    # 处理逻辑...
+    return response
+
+@app.model("classifier", version="v2")
+def classifier_v2(request: ModelInferRequest) -> ModelInferResponse:
+    # 版本化的 model
+    ...
+```
+
+### 7.2 未来：@app.capability 装饰器
+
+```python
+@app.capability(type="chat", model="llama-70b")
+def chat_handler(request):
+    ...
+
+@app.capability(type="embed")
+def embed_handler(request):
+    ...
+```
+
+### 7.3 未来：Worker 类（生命周期钩子）
+
+```python
+@app.worker(
+    capabilities=[{"type": "chat", "model": "llama-70b"}],
+    gpus=2
+)
+class ChatWorker(Worker):
+    def on_start(self):
+        self.engine = vllm.LLM(...)
+
+    def on_stop(self):
+        self.engine.shutdown()
+
+    def handle(self, request):
+        return self.engine.generate(...)
+```
+
+---
+
+## 8. 启动流程
+
+### 8.1 通过 CLI 启动
+
+```bash
+# 启动 server（Dispatcher + Workers）
+python -m anyserve.cli my_app:app --port 8000 --workers 1
+```
+
+CLI 做的事情：
+1. 启动 C++ Dispatcher（port 8000, management_port 9000）
+2. 启动 N 个 Python Worker 进程
+3. Worker 向 Dispatcher 注册
+
+### 8.2 启动时序
+
+```
+1. Dispatcher 启动
+   │
+   ├── 启动 KServe gRPC server (port 8000)
+   ├── 启动 Management gRPC server (port 9000)
+   └── 等待 Worker 注册
+   │
+   ↓
+2. Worker 启动
+   │
+   ├── 加载用户 app（执行 @app.model 装饰器）
+   ├── 创建 Unix Socket (/tmp/anyserve-worker-xxx.sock)
+   ├── 连接 Dispatcher (port 9000)
+   │   └── RegisterModel(model_name, version, socket_path)
+   │
+   └── 进入主循环，等待请求
+   │
+   ↓
+3. Dispatcher 更新 ModelRegistry
+   │
+   └── model_name:version → unix:///tmp/xxx.sock
+   │
+   ↓
+4. 系统就绪，可接收外部请求
+```
+
+---
+
+## 9. 文件结构
+
+```
+anyserve/
+├── cpp/                          # C++ 实现
+│   ├── server/
+│   │   ├── anyserve_dispatcher.{cpp,hpp}   # 主入口
+│   │   ├── model_registry.{cpp,hpp}        # 路由表
+│   │   ├── worker_client.{cpp,hpp}         # Unix Socket 客户端
+│   │   ├── process_supervisor.{cpp,hpp}    # 进程管理
+│   │   └── main.cpp                        # 可执行文件入口
+│   ├── core/
+│   │   └── shm_manager.{cpp,hpp}           # 共享内存（预留）
+│   └── build/                              # 构建产物
+│
+├── python/anyserve/              # Python 实现
+│   ├── __init__.py               # 公开 API
+│   ├── kserve.py                 # KServe 协议 + AnyServe 类
+│   ├── cli.py                    # CLI 入口
+│   ├── worker/
+│   │   ├── __main__.py           # Worker 进程
+│   │   ├── loader.py             # 模块加载
+│   │   └── client.py             # gRPC 客户端
+│   └── _proto/                   # 生成的 protobuf 代码
+│
+├── proto/                        # 协议定义
+│   ├── grpc_predict_v2.proto     # KServe v2
+│   ├── worker_management.proto   # Worker 注册
+│   └── anyserve.proto            # 内部协议（预留）
+│
+├── examples/                     # 示例
+│   ├── basic/
+│   ├── multi_stage/
+│   └── streaming/
+│
+└── docs/                         # 文档
+    ├── architecture.md           # 架构设计
+    ├── runtime.md                # 运行时实现（本文档）
+    └── mvp.md                    # MVP 规划
+```
+
+---
+
+## 10. 构建与运行
+
+### 10.1 构建
+
+```bash
+# 安装依赖
+just setup
+
+# 构建 C++ 和 Python
+just build
+
+# 清理
+just clean
+```
+
+### 10.2 运行示例
+
+```bash
+# 启动 server
+python -m anyserve.cli examples.basic.app:app --port 8000 --workers 1
+
+# 测试
+python examples/basic/run_example.py
+```
+
+---
+
+## 11. 未来规划
+
+### 11.1 Capability 路由
+
+将 ModelRegistry 改为 CapabilityRegistry：
+- 支持任意 key-value 匹配
+- 支持模糊匹配 / 优先级
+
+### 11.2 Worker Manager
+
+实现动态启停：
+- 监控队列深度
+- 根据 SLO 决定启停
+- 资源感知
+
+### 11.3 Object System
+
+实现跨 Replica 数据传输：
+- 与 Dispatcher 深度集成
+- RDMA 直连
+- Lazy read / Copy 语义
+
+### 11.4 Request Queues
+
+实现 SLO 调度：
+- 按 Capability 分队列
+- 优先级调度
+- 背压机制
+
+---
+
+## 附录：关键代码位置
+
+| 功能 | 文件 | 行号 |
+|------|------|------|
+| Dispatcher 主类 | `cpp/server/anyserve_dispatcher.hpp` | 28 |
+| Model 注册 | `cpp/server/model_registry.cpp` | - |
+| Worker 转发 | `cpp/server/worker_client.cpp` | - |
+| Python Worker | `python/anyserve/worker/__main__.py` | 55 |
+| AnyServe 类 | `python/anyserve/kserve.py` | 195 |
+| model 装饰器 | `python/anyserve/kserve.py` | 215 |
