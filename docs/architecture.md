@@ -1,320 +1,471 @@
-# anyserve Architecture (SSOT)
+# anyserve Architecture
 
-> 本文档是 anyserve 的架构单一事实源（Single Source of Truth, SSOT）。
-> 
-> 目标：
-> - 说清 anyserve 的定位、核心抽象、三层边界、关键运行机制
-> - 说清 anyserve 的实现层切分（Rust/Python 的职责与进程边界）
-> 
-> 非目标：
-> - 不展开上层调度器与资源管理层的内部算法/实现
-> - 不在本文档讨论多机 TP/EP 的具体启动细节（属于后续实现章节）
+> 本文档是 anyserve 的架构设计文档，用于帮助团队理解系统的核心概念、设计原则和实现结构。
 
 ---
 
-## 1. 定位与目标
+## 1. 概述
 
-anyserve 是一个 **面向大规模 LLM 推理的 Capability-Oriented Serving Runtime**。
+### anyserve 是什么
 
-它的定位是：在集群环境（如 K8s）之上，为请求级调度器提供一个稳定的执行层，使 LLM 推理能够：
+anyserve 是一个 **面向大规模 LLM 推理的 Serving Runtime**。
 
-- 以 **capability**（语义能力）为单位进行编排与路由
-- 以 **replica**（运行时副本）为单位进行执行与切换
-- 满足请求 SLO（延迟、吞吐、稳定性）
-- 尽可能少用 GPU（通过编排、binpacking、快速切换等手段）
+它的核心职责是：
+- 在一组已分配的资源（Gang）上，管理和调度推理 Worker
+- 以 **Capability**（语义能力）为单位进行请求分发
+- 支持 **Worker 动态启停**，实现资源的灵活复用
+- 提供 **Object System**，实现跨 Replica 的高效数据传递
 
-anyserve **不是**：
-- 分布式计算框架（不提供 task/actor 语义）
-- 全局请求调度器（不做全局路由策略）
-- 资源管理系统（不管理节点/GPU 分配）
+### 设计原则
 
----
+1. **Capability 驱动，非 Model 驱动**
+   - 调度基于 capability（任意 key-value），不只是 model name
+   - 例：`{type: "chat", model: "llama-70b", tier: "heavy"}`
 
-## 2. 三层架构与职责边界
+2. **控制流与数据流分离**
+   - 控制流：走 KServe 协议，经过 API Server 路由
+   - 数据流：Object System 通过 RDMA 直连传输
 
-anyserve 位于三层架构的中间层：
+3. **Replica 抽象屏蔽并行细节**
+   - 对外是一个 Replica，内部可能是 DP/TP/EP 任意组合
+   - API Server 不需要理解并行策略
 
-┌──────────────────────────────┐
-│ 上层调度器 (Capability Router) │
-└──────────────▲───────────────┘
-│ request(cap)
-│ delegation(cap upgrade)
-┌──────────────┴───────────────┐
-│ anyserve Runtime │
-└──────────────▲───────────────┘
-│ start/stop replicas (tier)
-│ allocate gang / resources
-┌──────────────┴───────────────┐
-│ 资源管理层 (K8s / 集群) │
-└──────────────────────────────┘
+4. **Worker 动态启停**
+   - Worker Manager 可以根据请求负载动态启停 Worker
+   - 这是 anyserve 区别于静态部署系统的核心特性
 
+5. **简化的 Object 语义**
+   - Copy 语义，无 ownership 模型
+   - Lazy read，按需传输
 
-### 2.1 上层调度器（不属于 anyserve）
-
-调度器负责 **请求级路由**，只理解：
-
-- `capability`（请求要的语义能力）
-- `replica`（可执行端点）
-- `replica load`（负载指标，用于负载均衡/binpacking）
-
-调度器做的事情：
-
-- 维护映射：`capability -> [replica endpoints]`
-- 在候选 replicas 中根据 load 做路由：
-  - 满足 capability
-  - 尽量 binpacking（集中负载以便腾空副本/机器）
-
-调度器 **不需要**理解（也不应理解）：
-- GPU 数量/形状
-- 单机/多机
-- TP/EP/PP 等并行策略
-- 引擎细节（vLLM/sglang/自定义逻辑）
-
-> 在调度器眼里：
-- replica 不是“万能”的。它只提供自己注册过的 capability 集合。
-- 当找不到特定capability可用的replica 时，调度器也会发请求到自认为合适的replica，由replica来委托请求
-
----
-
-### 2.2 anyserve（属于本项目）
-
-anyserve 是 **request-level serving runtime**，负责：
-
-- 在 replica 内提供 capability
-- 请求接入、排队、并发控制、背压、（可选）batch
-- 在资源不变前提下进行本地重配置：
-  - 切换 capability
-  - 拆分/合并本机内的执行形态（in-place reshape）
-- 当出现硬不匹配时执行 **delegation（委托）**
-- 大对象传输：Object Plane（ObjRef）
+### 非目标
 
 anyserve **不负责**：
-- 全局路由（那是上层调度器）
-- 节点/GPU 的全局分配与扩缩容（那是资源管理层或其生态）
+- 全局请求路由（由 API Server 负责）
+- 资源分配与扩缩容（由 K8s / 资源管理层负责）
+- 推理引擎内部实现（由 vLLM/sglang 等负责）
 
 ---
 
-### 2.3 资源管理层（不属于 anyserve）
+## 2. 与其他系统对比
 
-资源管理层负责：
-
-- 管理物理资源（节点、GPU、网络等）
-- 根据全局负载决定：
-  - 启动/停止 anyserve replicas
-  - 为 replica 分配资源规模（可以抽象成少量 tier）
-- 在需要多机时，保证 **原子启动（gang）**：
-  - 要么一次性分配并启动所需资源组
-  - 要么不启动（避免“半拉子资源”暴露给 runtime）
-
-资源层可以维护 **少数离散的资源等级（tier）**，例如：
-- standard（常规）
-- heavy（重型）
-
-tier 的具体含义（多少 GPU、单机/多机）不要求暴露给调度器与 anyserve runtime；
-调度器只通过 capability 语义（如 `decode.heavy`）感知“重型能力”。
+| 系统 | 定位 | 与 anyserve 的区别 |
+|------|------|-------------------|
+| **Ray** | 通用分布式计算框架 | anyserve 专注 serving，不做 task/actor；Object System 更简单（copy 语义，无 ownership） |
+| **Triton** | Model Serving Server | Triton 以 model 为中心，静态部署；anyserve 以 capability 为中心，动态启停 |
+| **KServe** | K8s 上的 ML Serving | anyserve 复用 KServe 协议，但内部架构不同；anyserve 是 Runtime，KServe 是编排层 |
+| **vLLM/sglang** | 推理引擎 | anyserve 管理引擎的生命周期，引擎是 Worker 内部的实现 |
 
 ---
 
-### 2.4 关键子系统 (Key Subsystems)
+## 3. 系统分层
 
-anyserve 的内部架构由以下四个核心子系统紧密协作组成：
+```
+┌──────────────────────────────────────────────┐
+│              API Server                       │
+│         （独立项目，不属于 anyserve）           │
+│   - 请求入口                                  │
+│   - 基于 Capability 路由                      │
+└──────────────────────┬───────────────────────┘
+                       │ KServe (控制流)
+                       ↓
+┌──────────────────────────────────────────────┐
+│            anyserve Replica                   │
+│              （本项目）                        │
+│   - 管理 Worker 生命周期                      │
+│   - 请求分发、队列、SLO                       │
+│   - Object System                            │
+└──────────────────────┬───────────────────────┘
+                       │
+                       ↓
+┌──────────────────────────────────────────────┐
+│           资源管理层 (K8s Gang)               │
+│         （不属于 anyserve）                   │
+│   - 原子分配资源                              │
+│   - 单机或多机                                │
+└──────────────────────────────────────────────┘
+```
 
-1.  **Control Plane (Rust Runtime)**
-    - **角色**: 副本的大脑与神经中枢，由 Rust 实现的高性能异步运行时。
-    - **职责**: 提供高性能的 gRPC/HTTP **Ingress**；管理请求生命周期（排队、背压、并发控制）；执行 **Capability Dispatch**，将请求分发至具体的 Python Worker；处理 **Delegation** 逻辑（能力升级与重路由）。
+### 职责边界
 
-2.  **Execution Plane (Python Workers)**
-    - **角色**: 具体的计算执行者，提供类似 FastAPI 的开发者体验。
-    - **职责**: 承载用户定义的 Capability Handler 和推理引擎（如 vLLM, SGLang）。运行在独立的 Python 进程中，通过 IPC 与 Control Plane 通信，确保计算任务的隔离性与引擎的稳定性。
-
-3.  **Local Resource Coordinator (现场资源协调器)**
-    - **角色**: 本地资源的动态管理者。
-    - **职责**: 在不重新申请集群资源的前提下，对本地 Replica 进行 **In-place Reshape**。这包括动态启动/停止 Worker 进程、利用推理引擎特性（如 vLLM Sleep Mode）进行快速上下文切换，以满足当前请求所需的 Capability。
-
-4.  **Object Plane (Transient Data Transport)**
-    - **角色**: 轻量级的大对象传输层。
-    - **职责**: 类似 Ray Object Store 但更轻量。专注于 **Copy-Semantics** 和 **TTL-driven** 的生命周期管理。支持本地 Zero-copy (mmap) 和跨机高效传输，用于在不同 Capability 步骤或 Delegation 过程中传递 Tensor 等富数据。
-
----
-
-## 3. 核心抽象
-
-### 3.1 Capability（能力）
-
-Capability 表示一种 **语义计算能力**，而不是模型/接口/资源形态。
-
-示例：
-
-- `prefill`
-- `decode`
-- `decode.heavy`（重型 decode 能力）
-- `embedding`
-- `rerank`
-
-Capability 描述的是 “做什么”，不描述 “怎么做”。
+| 层 | 职责 | 不负责 |
+|----|------|--------|
+| **API Server** | 全局路由、负载均衡 | 不理解 Worker、不管资源 |
+| **anyserve** | Worker 管理、请求分发、Object System | 不做全局路由、不做资源分配 |
+| **资源管理层** | 分配/回收 Gang | 不理解 Capability |
 
 ---
 
-### 3.2 Replica（运行时载体）
+## 4. 核心概念
 
-Replica 是 anyserve 的最小运行时单元，用于承载 capability。
+### Gang
 
-一个 replica：
+- K8s 分配的一组资源（N 机器 × M GPU）
+- 原子分配：要么全给，要么不给
+- 例：2 台机器，每台 8 卡 = 1 个 Gang
 
-- 运行在一组已分配资源之上（单机或多机）
-- 对外暴露一个 endpoint（被调度器路由）
-- 注册并提供一组 capability
-- 有运行态：ready/busy/draining 等
-- 内部实现（TP/EP、多机通信）对调度器透明
+### Replica
 
-> Replica 是不可拆分的执行整体；调度器从不把一个请求拆到多个 replica 上执行。
+- 运行在一个 Gang 上的 anyserve 实例
+- **1 Replica = 1 Gang**
+- 对 API Server 暴露 endpoint（入口数量待定）
 
----
+### Dispatcher
 
-### 3.3 Delegation（委托）
+- Replica 的控制中心
+- 单机场景下：1 Replica = 1 Dispatcher
+- 职责：流量入口、Worker 管理、请求队列、Object System
 
-Delegation 是 anyserve 的关键机制，用于解决“入口可承接但本地不可执行”的情况。
+### Worker
 
-当某 replica **无法以当前资源形态**满足某 capability（硬不匹配）时：
+- 执行实际推理的进程
+- 1 Worker 提供 1 组 Capability
+- 1 Worker 可能使用 1-N 张 GPU
+- Dispatcher 不管 Worker 内部细节（TP/EP 等由引擎管理）
 
-- anyserve 将请求 capability **语义升级**（例如：`decode -> decode.heavy`）
-- 将升级后的请求重新交由调度器路由到能提供该 capability 的 replica
+### Capability
 
-重要约束：
+- **任意 key-value 数据**，用于请求路由和匹配
+- 不是固定 schema，由业务定义
+- 例：
+  ```
+  {type: "chat", model: "llama-70b"}
+  {type: "embed"}
+  {model: "llama-70b", tier: "heavy", max_tokens: 8192}
+  ```
 
-- delegation 是 **重新路由**，不是 replica 间直接调用
-- PoC/MVP 建议限制为 **最多一次委托**，避免转发风暴
+### Delegation
 
----
-
-### 3.4 Object Plane（大对象系统）
-
-anyserve 内置 Object Plane，用于在能力之间/副本之间传递超大中间数据：
-
-- 以 ObjRef 表达（可自动解引用、lazy get）
-- 同机尽量 zero-copy（mmap/memoryview）
-- 跨机以 copy 为主
-- 简化语义：copy-only、TTL 驱动，不做复杂引用计数/lineage
-
-Object Plane 是 anyserve 的一等能力，但不追求成为通用分布式对象存储。
-
----
-
-## 4. 请求执行模型（request-level serving）
-
-每个请求进入 anyserve replica 后，遵循统一流程：
-
-request(cap)
-├─ local can serve cap:
-│ execute locally
-│
-├─ else can reconfigure within allocated resources:
-│ reconfigure (switch/split/merge) then execute
-│
-└─ else (hard mismatch):
-cap := upgrade(cap) # e.g. decode -> decode.heavy
-delegate to scheduler for re-routing
-
-
-其中：
-
-- **本地执行** 是默认路径
-- **本地重配置** 只在“资源占用不变”的前提下进行（不触发资源层）
-- **委托** 用于硬不匹配（例如需要 heavy 能力）
+- 当 Replica 收到自己无法处理的请求时，转发给其他 Replica
+- 场景：API Server 路由信息滞后，或主动"随便选一个"
+- 走 KServe 协议，经过 API Server 重新路由
 
 ---
 
-## 5. “万能 runtime” 的准确表述
+## 5. 部署架构
 
-anyserve 不保证每个 replica 都能本地执行所有请求。
+### 单机部署
 
-anyserve 追求的保证是：
+```
+┌─────────────────────────────────────┐
+│           Gang (1 machine)          │
+│                                     │
+│   ┌─────────────────────────────┐   │
+│   │      anyserve Replica       │   │
+│   │                             │   │
+│   │   Dispatcher                │   │
+│   │      ↓                      │   │
+│   │   Workers (GPU 0-7)         │   │
+│   └─────────────────────────────┘   │
+│                                     │
+└─────────────────────────────────────┘
+```
 
-> 任意请求可以发送到任意入口 replica，  
-> 入口 replica 会通过本地执行/本地重配置/委托重路由，  
-> 为该请求找到一条可执行路径。
+### 多机部署
 
-也就是说：**万能的是入口语义，不是本地算力。**
-
----
-
-## 6. 实现架构：Rust + Python
-
-anyserve 采用 **Rust + Python** 的实现分层：
-
-- Rust：高性能 runtime（控制路径）
-- Python：执行与生态（执行路径）
-
-### 6.1 Rust Runtime（控制路径）
-
-Rust 负责：
-
-- gRPC/HTTP ingress
-- request queue / 并发控制 / 背压（可选 batch）
-- capability dispatch（本地路由到 handler）
-- delegation（cap upgrade + 调度器重路由）
-- Object Plane 的控制面（对象注册、生命周期、传输调度）
-- 与 Python Worker 的 IPC（小消息走 IPC，大对象走 ObjRef）
-
-Rust 进程是 replica 的“主进程”，保持长生命周期与高并发能力。
-
----
-
-### 6.2 Python Worker（执行路径）
-
-Python 负责：
-
-- 用户编写的 capability handler（开发体验类似 FastAPI）
-- 推理引擎集成（如 vLLM / sglang）
-- torch/tokenizer/自定义业务逻辑
-
-Python Worker 作为 worker 进程运行：
-
-- 接收 Rust runtime 的调用
-- 执行 handler，返回结果或 ObjRef
-- 不参与全局路由策略与资源决策
+```
+┌─────────────────────────────────────────────────────┐
+│              Gang (2 machines, 16 GPUs)             │
+│                                                     │
+│   ┌───────────────────────────────────────────┐    │
+│   │            anyserve Replica                │    │
+│   │                                            │    │
+│   │   Machine A          Machine B             │    │
+│   │   ┌──────────┐      ┌──────────┐          │    │
+│   │   │ DP 0     │      │ DP 1     │          │    │
+│   │   │ (ep=8)   │      │ (ep=8)   │          │    │
+│   │   └──────────┘      └──────────┘          │    │
+│   │                                            │    │
+│   │   anyserve 负责在两台机器上启动进程         │    │
+│   │   EP 内部通信由引擎管理                    │    │
+│   └───────────────────────────────────────────┘    │
+│                                                     │
+└─────────────────────────────────────────────────────┘
+```
 
 ---
 
-### 6.3 进程边界（Replica = Rust + Python Workers）
+## 6. 进程架构
 
-一个 anyserve replica 的典型进程模型：
+### 单机场景
 
-- 1 个 Rust 主进程（runtime）
-- N 个 Python worker 进程（按 capability / runner 类型划分）
+```
+┌──────────────────────────────────────────────────────────────┐
+│                     anyserve Replica                          │
+│                                                               │
+│   ┌───────────────────────────────────────────────────────┐  │
+│   │                    Dispatcher (C++)                    │  │
+│   │                                                        │  │
+│   │   ┌─────────────┐  ┌─────────────┐  ┌──────────────┐  │  │
+│   │   │   Worker    │  │   Request   │  │    Object    │  │  │
+│   │   │   Manager   │  │   Queues    │  │    System    │  │  │
+│   │   └─────────────┘  └─────────────┘  └──────────────┘  │  │
+│   │                                                        │  │
+│   └───────────────────────────┬────────────────────────────┘  │
+│                               │ IPC (Unix Socket)             │
+│             ┌─────────────────┼─────────────────┐             │
+│             ↓                 ↓                 ↓             │
+│   ┌──────────────┐   ┌──────────────┐   ┌──────────────┐     │
+│   │   Worker 0   │   │   Worker 1   │   │   Worker 2   │     │
+│   │   (Python)   │   │   (Python)   │   │   (Python)   │     │
+│   │              │   │              │   │              │     │
+│   │ cap: chat    │   │ cap: embed   │   │ cap: heavy   │     │
+│   │ GPU: 0,1     │   │ GPU: 2       │   │ GPU: 3-7     │     │
+│   └──────────────┘   └──────────────┘   └──────────────┘     │
+│                                                               │
+└──────────────────────────────────────────────────────────────┘
+```
 
-跨 replica 的交互（例如委托）通过 **调度器重路由** 完成，而非 replica 直接互调。
+### Dispatcher 内部组件
+
+| 组件 | 职责 |
+|------|------|
+| **Worker Manager** | 管理 Worker 生命周期，动态启停，资源感知 |
+| **Request Queues** | 按 Capability 分队列，SLO 调度 |
+| **Object System** | 内存管理，跨 Replica 数据传输 |
 
 ---
 
-## 7. 针对 LLM 推理的专项优化（引擎可插拔）
+## 7. Worker 动态管理
 
-anyserve 支持针对推理引擎的特化 runner（例如 vLLM runner）：
+这是 anyserve 的核心特性之一。
 
-- 引擎生命周期管理（启动/复用/回收）
-- 快速模型/配置切换（如 sleep/resume）
-- 与 Object Plane 配合复用中间数据（如 KV cache）
+### 为什么需要动态启停
 
-这些优化只存在于 anyserve 内部，对调度器与资源层透明。
+- GPU 资源昂贵，不能让所有 Worker 常驻
+- 不同时段的 Capability 需求不同
+- 支持同一资源上运行不同模型/配置
+
+### Worker Manager 职责
+
+1. **感知 Worker 状态**：运行中、空闲、资源占用
+2. **启停决策**：根据请求队列、SLO、资源情况决定
+3. **资源感知**：知道每个 Worker 用了哪些 GPU
+4. **生命周期管理**：启动、停止、健康检查
+
+### 与静态部署的区别
+
+| | 静态部署（如 Triton） | anyserve |
+|---|---|---|
+| Worker 数量 | 启动时固定 | 动态变化 |
+| 资源利用 | 常驻占用 | 按需启停 |
+| 切换模型 | 重新部署 | 动态切换 |
+| 适合场景 | 稳定负载 | 多变负载、多模型 |
 
 ---
 
-## 8. 设计约束与非目标（Non-Goals）
+## 8. Request Queues
 
-anyserve 明确不做：
+### 设计目标
 
-- 全局请求调度（由上层调度器负责）
-- 全局资源编排与扩缩容（由资源层负责）
-- task/actor 级分布式执行模型（不做 Ray）
-- 在 runtime 层理解 TP/EP/PP 的内部细节（这些属于引擎/runner）
+- 按 Capability 组织请求队列
+- 根据 SLO 要求调度请求
+- 配合 Worker Manager 做流量控制
+
+### 核心机制
+
+```
+请求进入 Dispatcher
+       │
+       ↓
+┌─────────────────────────────────────────┐
+│            Request Queues               │
+│                                         │
+│   Queue A          Queue B              │
+│   (cap: chat)      (cap: embed)         │
+│   ┌─────────┐      ┌─────────┐          │
+│   │ req 1   │      │ req 4   │          │
+│   │ req 2   │      │ req 5   │          │
+│   │ req 3   │      └─────────┘          │
+│   └─────────┘                           │
+│                                         │
+└─────────────────────────────────────────┘
+       │
+       ↓
+  调度决策（基于 SLO、Worker 状态）
+       │
+       ↓
+  分发给 Worker
+```
+
+### 调度考量
+
+| 因素 | 说明 |
+|------|------|
+| **SLO** | 请求的延迟要求，优先级 |
+| **队列深度** | 积压情况，是否需要背压 |
+| **Worker 状态** | 哪些 Worker 可用，负载如何 |
+| **资源情况** | 是否需要启动新 Worker |
+
+### 与 Worker Manager 协作
+
+- 队列积压 → 通知 Worker Manager 启动更多 Worker
+- Worker 空闲 → 通知 Worker Manager 可以停止
+- 背压 → 拒绝新请求或触发 Delegation
 
 ---
 
-## 9. 总结
+## 9. Object System
 
-anyserve 的价值在于：
+### 设计目标
 
-> 在正确的抽象层（Capability/Replica），  
-> 用 request-level runtime + delegation 机制，  
-> 把复杂的 LLM 推理执行与切换问题变成可路由、可组合、可插拔的运行时问题，  
-> 并与上层调度器、下层资源管理清晰解耦。
+- 支持跨 Replica 的大对象传递（如图片、Tensor）
+- 尽可能减少内存拷贝
+- 为多模态推理（VL、Omni）做准备
+
+### 控制流 vs 数据流分离
+
+```
+Replica A                    API Server                   Replica B
+    │                            │                            │
+    │ ── call(cap, obj_ref) ───► │ ── route ────────────────► │
+    │         (KServe)           │        (KServe)            │
+    │                            │                            │
+    │ ◄─────────────────── RDMA 直连 ───────────────────────► │
+    │                    (obj 实际数据)                        │
+```
+
+- **控制流**：KServe 协议，经过 API Server 路由
+- **数据流**：RDMA 直连，不经过 API Server
+
+### 核心特性
+
+| 特性 | 说明 |
+|------|------|
+| **Lazy Read** | obj ref 传递时不传数据，读取时才拉取 |
+| **Copy 语义** | 读取得到 copy，无 ownership / 引用计数 |
+| **与 Dispatcher 集成** | 请求数据直接写入 Object System 内存 |
+| **Cache** | 可选，带 key 的 obj 可被缓存，由 Tracker 管理 |
+
+### API 示例
+
+```python
+# 直接从 URL 创建
+obj = anyserve.fetch("http://example.com/image.jpg")
+
+# 创建带 key（可缓存）
+obj = anyserve.create(data, key="user-123-image")
+
+# 跨 Replica 调用
+result = anyserve.call(cap={...}, inputs=[obj])
+
+# 查找缓存
+obj = anyserve.lookup("user-123-image")
+```
+
+---
+
+## 10. 请求流程
+
+### 完整路径
+
+```
+1. Client 发送请求
+   headers: {x-cap-type: "chat", x-cap-model: "llama-70b"}
+   body: <input data>
+              │
+              ↓
+2. API Server 路由
+   根据 capability 选择 Replica
+              │
+              ↓
+3. anyserve Dispatcher 接收
+   - 解析 header，提取 capability
+   - body 数据写入 Object System
+   - 查找匹配的 Worker
+              │
+              ↓
+4. 分发给 Worker
+   - 传递 obj ref
+   - Worker 执行推理
+              │
+              ↓
+5. 返回响应
+```
+
+### Delegation 流程
+
+```
+1. Dispatcher 收到请求，发现没有匹配的 Worker
+              │
+              ↓
+2. 发起 Delegation
+   - 构造新请求（带原始 obj ref）
+   - 发送到 API Server
+              │
+              ↓
+3. API Server 重新路由
+   - 选择另一个 Replica
+              │
+              ↓
+4. 目标 Replica 处理并返回
+```
+
+---
+
+## 11. Worker 定义
+
+### 装饰器方式（简单场景）
+
+```python
+from anyserve import AnyServe
+
+app = AnyServe()
+
+@app.capability(type="chat", model="llama-70b")
+def chat_handler(request):
+    return response
+
+@app.capability(type="embed")
+def embed_handler(request):
+    return response
+```
+
+### 类方式（需要生命周期管理）
+
+```python
+from anyserve import AnyServe, Worker
+
+app = AnyServe()
+
+@app.worker(
+    capabilities=[
+        {"type": "chat", "model": "llama-70b"},
+        {"type": "chat", "model": "llama-7b"},
+    ],
+    gpus=2
+)
+class ChatWorker(Worker):
+    def on_start(self):
+        self.engine = vllm.LLM(...)
+
+    def on_stop(self):
+        self.engine.shutdown()
+
+    def handle(self, request):
+        return self.engine.generate(...)
+```
+
+### 资源声明
+
+Worker 需要声明资源占用，供 Worker Manager 决策：
+
+```python
+@app.capability(type="heavy", gpus=8)
+def heavy_handler(request):
+    ...
+```
+
+---
+
+## 附录：术语表
+
+| 术语 | 定义 |
+|------|------|
+| Gang | K8s 分配的一组资源 |
+| Replica | 运行在 Gang 上的 anyserve 实例 |
+| Dispatcher | Replica 的控制进程 |
+| Worker | 执行推理的进程 |
+| Capability | 任意 key-value，用于请求匹配和路由 |
+| Delegation | 请求转发机制 |
+| Object System | 跨 Replica 数据传输系统 |
