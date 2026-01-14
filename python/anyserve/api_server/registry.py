@@ -44,6 +44,10 @@ class Capability:
     def to_dict(self) -> Dict[str, Any]:
         return self.attributes.copy()
 
+    def get(self, key: str, default: Any = None) -> Any:
+        """Get an attribute value by key."""
+        return self.attributes.get(key, default)
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Capability":
         return cls(**data)

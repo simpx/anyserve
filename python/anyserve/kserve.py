@@ -12,6 +12,9 @@ Supports both:
 from typing import List, Optional, Callable, Dict, Any as PyAny, Union
 from dataclasses import dataclass, field
 
+# Import Capability from the canonical location
+from anyserve.api_server.registry import Capability
+
 
 # =============================================================================
 # Python Wrappers for KServe Protocol Messages
@@ -189,42 +192,8 @@ class ModelInferResponse:
 
 
 # =============================================================================
-# Context and Capability Support
+# Context Support (Capability is imported from api_server.registry)
 # =============================================================================
-
-@dataclass
-class Capability:
-    """
-    Represents a Capability with key-value attributes.
-
-    Examples:
-        Capability(type="chat", model="llama-70b")
-        Capability(type="embed")
-    """
-    attributes: Dict[str, PyAny] = field(default_factory=dict)
-
-    def __init__(self, **kwargs):
-        self.attributes = kwargs
-
-    def matches(self, query: Dict[str, PyAny]) -> bool:
-        """Check if this capability matches a query."""
-        for key, value in query.items():
-            if key not in self.attributes:
-                return False
-            if self.attributes[key] != value:
-                return False
-        return True
-
-    def to_dict(self) -> Dict[str, PyAny]:
-        return self.attributes.copy()
-
-    def get(self, key: str, default: PyAny = None) -> PyAny:
-        return self.attributes.get(key, default)
-
-    def __repr__(self):
-        attrs = ", ".join(f"{k}={v!r}" for k, v in self.attributes.items())
-        return f"Capability({attrs})"
-
 
 class Context:
     """
