@@ -4,14 +4,16 @@ try:
         AnyServe,
         model, infer,
         ModelInferRequest, ModelInferResponse,
-        InferInputTensor, InferOutputTensor, InferTensorContents
+        InferInputTensor, InferOutputTensor, InferTensorContents,
+        Capability, Context,
     )
 except ImportError:
     from .kserve import (
         AnyServe,
         model, infer,
         ModelInferRequest, ModelInferResponse,
-        InferInputTensor, InferOutputTensor, InferTensorContents
+        InferInputTensor, InferOutputTensor, InferTensorContents,
+        Capability, Context,
     )
 
 __all__ = [
@@ -19,4 +21,5 @@ __all__ = [
     "model", "infer",
     "ModelInferRequest", "ModelInferResponse",
     "InferInputTensor", "InferOutputTensor", "InferTensorContents",
+    "Capability", "Context",
 ]

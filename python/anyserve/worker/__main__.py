@@ -8,6 +8,7 @@ Worker 负责:
 3. 接收来自 C++ Ingress 的请求
 4. 调用对应的模型处理函数
 5. 返回响应给 Ingress
+6. 向 API Server 注册 capabilities (MVP)
 """
 
 import sys
@@ -17,10 +18,11 @@ import struct
 import argparse
 import importlib
 import signal
-from typing import Dict, Tuple, Callable
+import httpx
+from typing import Dict, Tuple, Callable, Optional, List, Any
 
 # 导入模型类型
-from anyserve.kserve import ModelInferRequest, ModelInferResponse
+from anyserve.kserve import ModelInferRequest, ModelInferResponse, Context, Capability
 
 
 def main():
@@ -29,6 +31,9 @@ def main():
     parser.add_argument('--ingress', required=True, help='Ingress address (host:port)')
     parser.add_argument('--worker-id', required=True, help='Worker ID')
     parser.add_argument('--worker-port', type=int, default=None, help='Worker port for Unix socket')
+    parser.add_argument('--api-server', default=None, help='API Server URL (e.g., http://localhost:8080)')
+    parser.add_argument('--object-store', default='/tmp/anyserve-objects', help='Object store path')
+    parser.add_argument('--replica-id', default=None, help='Replica ID for registration')
 
     args = parser.parse_args()
 
@@ -42,23 +47,41 @@ def main():
         app=app,
         worker_id=args.worker_id,
         ingress_address=args.ingress,
-        worker_port=args.worker_port
+        worker_port=args.worker_port,
+        api_server=args.api_server,
+        object_store_path=args.object_store,
+        replica_id=args.replica_id or args.worker_id,
     )
 
     # 3. 向 Ingress 注册
     worker.register_to_ingress()
 
-    # 4. 启动 Unix Socket 服务器
+    # 4. 向 API Server 注册 (如果配置了)
+    if args.api_server:
+        worker.register_to_api_server()
+
+    # 5. 启动 Unix Socket 服务器
     worker.serve()
 
 
 class Worker:
     """Worker 进程 - 处理推理请求"""
 
-    def __init__(self, app, worker_id: str, ingress_address: str, worker_port: int = None):
+    def __init__(
+        self,
+        app,
+        worker_id: str,
+        ingress_address: str,
+        worker_port: int = None,
+        api_server: str = None,
+        object_store_path: str = '/tmp/anyserve-objects',
+        replica_id: str = None,
+    ):
         self.app = app
         self.worker_id = worker_id
         self.ingress_address = ingress_address
+        self.api_server = api_server
+        self.replica_id = replica_id or worker_id
 
         # Unix Socket 路径
         if worker_port:
@@ -68,6 +91,10 @@ class Worker:
 
         self.running = True
 
+        # Initialize ObjectStore
+        from anyserve.objects import ObjectStore
+        self.object_store = ObjectStore(object_store_path)
+
         # 设置信号处理
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
@@ -76,6 +103,81 @@ class Worker:
         """处理关闭信号"""
         print(f"\n[Worker-{self.worker_id}] Received signal {signum}, shutting down...")
         self.running = False
+
+        # Unregister from API Server
+        if self.api_server:
+            self.unregister_from_api_server()
+
+    def register_to_api_server(self):
+        """向 API Server 注册 capabilities"""
+        if not self.api_server:
+            return
+
+        # 收集 capabilities
+        capabilities = []
+
+        # 从 capability handlers 收集
+        if hasattr(self.app, '_capability_handlers'):
+            for cap, handler, uses_context in self.app._capability_handlers:
+                capabilities.append(cap.to_dict())
+
+        # 从 legacy model registry 收集 (转换为 capability 格式)
+        if hasattr(self.app, '_local_registry') and not capabilities:
+            for (model_name, version), handler in self.app._local_registry.items():
+                cap = {"type": model_name}
+                if version:
+                    cap["model"] = version
+                capabilities.append(cap)
+
+        if not capabilities:
+            print(f"[Worker-{self.worker_id}] No capabilities to register")
+            return
+
+        # 注册到 API Server
+        try:
+            # Extract host and port from ingress address for gRPC endpoint
+            ingress_host, ingress_port = self.ingress_address.split(":")
+
+            register_data = {
+                "replica_id": self.replica_id,
+                "endpoint": f"localhost:{ingress_port}",  # gRPC endpoint
+                "capabilities": capabilities,
+            }
+
+            print(f"[Worker-{self.worker_id}] Registering to API Server: {self.api_server}")
+            print(f"[Worker-{self.worker_id}] Capabilities: {capabilities}")
+
+            response = httpx.post(
+                f"{self.api_server}/register",
+                json=register_data,
+                timeout=10.0,
+            )
+
+            if response.status_code == 200:
+                result = response.json()
+                print(f"[Worker-{self.worker_id}] API Server registration: {result['message']}")
+            else:
+                print(f"[Worker-{self.worker_id}] API Server registration failed: {response.status_code}")
+
+        except Exception as e:
+            print(f"[Worker-{self.worker_id}] Failed to register with API Server: {e}")
+
+    def unregister_from_api_server(self):
+        """从 API Server 注销"""
+        if not self.api_server:
+            return
+
+        try:
+            response = httpx.request(
+                "DELETE",
+                f"{self.api_server}/unregister",
+                json={"replica_id": self.replica_id},
+                timeout=5.0,
+            )
+            if response.status_code == 200:
+                print(f"[Worker-{self.worker_id}] Unregistered from API Server")
+        except Exception as e:
+            print(f"[Worker-{self.worker_id}] Failed to unregister: {e}")
 
     def register_to_ingress(self):
         """向 Ingress 注册所有模型"""
@@ -119,12 +221,12 @@ class Worker:
                 try:
                     response = stub.RegisterModel(request, timeout=5.0)
                     if response.success:
-                        print(f"[Worker-{self.worker_id}] ✓ Registered model: {model_name}" +
+                        print(f"[Worker-{self.worker_id}] Registered model: {model_name}" +
                               (f":{version}" if version else ""))
                     else:
-                        print(f"[Worker-{self.worker_id}] ✗ Failed to register {model_name}: {response.message}")
+                        print(f"[Worker-{self.worker_id}] Failed to register {model_name}: {response.message}")
                 except grpc.RpcError as e:
-                    print(f"[Worker-{self.worker_id}] ✗ gRPC error registering {model_name}: {e.code()} - {e.details()}")
+                    print(f"[Worker-{self.worker_id}] gRPC error registering {model_name}: {e.code()} - {e.details()}")
 
             channel.close()
             print(f"[Worker-{self.worker_id}] Model registration completed")
@@ -210,25 +312,96 @@ class Worker:
         finally:
             conn.close()
 
+    def _create_context(self, capability: Optional[Capability] = None) -> Context:
+        """创建 Context 对象"""
+        return Context(
+            objects=self.object_store,
+            call_func=self._remote_call,
+            replica_id=self.replica_id,
+            capability=capability,
+        )
+
+    def _remote_call(
+        self,
+        capability: Dict[str, Any],
+        inputs: Dict[str, Any],
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        执行跨 Replica 调用 (通过 API Server)
+        """
+        if not self.api_server:
+            raise RuntimeError("API Server not configured for cross-Replica calls")
+
+        # Build headers from capability
+        headers = {}
+        for key, value in capability.items():
+            header_name = f"X-Capability-{key.replace('_', '-').title()}"
+            headers[header_name] = str(value)
+
+        # Build request body
+        request_body = {
+            "model_name": capability.get("type", "unknown"),
+            "inputs": [
+                {
+                    "name": name,
+                    "datatype": "BYTES" if isinstance(value, (str, bytes)) else "FP32",
+                    "shape": [1],
+                    "contents": {
+                        "bytes_contents": [value] if isinstance(value, str) else [],
+                    }
+                }
+                for name, value in inputs.items()
+            ]
+        }
+
+        try:
+            response = httpx.post(
+                f"{self.api_server}/infer/json",
+                headers=headers,
+                json=request_body,
+                timeout=30.0,
+            )
+
+            if response.status_code == 200:
+                return response.json()
+            else:
+                raise RuntimeError(f"Remote call failed: {response.status_code} - {response.text}")
+
+        except Exception as e:
+            raise RuntimeError(f"Remote call error: {e}")
+
     def dispatch_request(self, request: ModelInferRequest) -> ModelInferResponse:
         """分发请求到对应的模型处理函数"""
         model_name = request.model_name
         model_version = request.model_version
 
-        # 查找处理函数
         handler = None
+        uses_context = False
+        matched_capability = None
 
-        # 1. 尝试精确匹配（name + version）
-        if (model_name, model_version) in self.app._local_registry:
-            handler = self.app._local_registry[(model_name, model_version)]
+        # 1. 尝试 capability 匹配 (优先)
+        if hasattr(self.app, '_capability_handlers'):
+            capability_query = {"type": model_name}
+            if model_version:
+                capability_query["model"] = model_version
 
-        # 2. 尝试无版本匹配
-        elif (model_name, None) in self.app._local_registry:
-            handler = self.app._local_registry[(model_name, None)]
+            result = self.app.find_handler(capability_query)
+            if result:
+                handler, uses_context, matched_capability = result
 
-        # 3. 尝试空版本字符串匹配
-        elif model_version and (model_name, "") in self.app._local_registry:
-            handler = self.app._local_registry[(model_name, "")]
+        # 2. 尝试精确匹配（name + version）
+        if handler is None and hasattr(self.app, '_local_registry'):
+            if (model_name, model_version) in self.app._local_registry:
+                handler = self.app._local_registry[(model_name, model_version)]
+
+            # 3. 尝试无版本匹配
+            elif (model_name, None) in self.app._local_registry:
+                handler = self.app._local_registry[(model_name, None)]
+
+            # 4. 尝试空版本字符串匹配
+            elif model_version and (model_name, "") in self.app._local_registry:
+                handler = self.app._local_registry[(model_name, "")]
 
         if handler is None:
             # 返回错误响应
@@ -241,7 +414,13 @@ class Worker:
 
         # 调用处理函数
         try:
-            response = handler(request)
+            if uses_context:
+                # New capability-style handler with context
+                context = self._create_context(matched_capability)
+                response = handler(request, context)
+            else:
+                # Legacy model-style handler without context
+                response = handler(request)
             return response
         except Exception as e:
             import traceback

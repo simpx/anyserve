@@ -27,6 +27,10 @@ Examples:
   anyserve examples.kserve_server:app
   anyserve examples.kserve_server:app --port 8080 --workers 4
   anyserve examples.kserve_server:app --reload
+
+MVP Examples:
+  anyserve examples.chat_app:app --port 50051 --api-server http://localhost:8080
+  anyserve examples.embed_app:app --port 50052 --api-server http://localhost:8080
         """
     )
     parser.add_argument('app', help='Application module (e.g., examples.kserve_server:app)')
@@ -35,8 +39,18 @@ Examples:
     parser.add_argument('--workers', type=int, default=1, help='Number of workers (default: 1)')
     parser.add_argument('--reload', action='store_true', help='Auto-reload on code changes (not implemented yet)')
     parser.add_argument('--ingress-bin', default=None, help='Path to anyserve_ingress binary (auto-detect if not specified)')
+    # MVP options
+    parser.add_argument('--api-server', default=None, help='API Server URL for capability registration (e.g., http://localhost:8080)')
+    parser.add_argument('--object-store', default='/tmp/anyserve-objects', help='Object store path (default: /tmp/anyserve-objects)')
+    parser.add_argument('--replica-id', default=None, help='Replica ID for API Server registration (auto-generated if not specified)')
 
     args = parser.parse_args()
+
+    # Generate replica ID if not provided
+    replica_id = args.replica_id
+    if replica_id is None:
+        import uuid
+        replica_id = f"replica-{args.port}-{str(uuid.uuid4())[:8]}"
 
     # Create server instance
     server = AnyServeServer(
@@ -45,7 +59,10 @@ Examples:
         port=args.port,
         workers=args.workers,
         reload=args.reload,
-        ingress_bin=args.ingress_bin
+        ingress_bin=args.ingress_bin,
+        api_server=args.api_server,
+        object_store=args.object_store,
+        replica_id=replica_id,
     )
 
     # Start server
@@ -72,7 +89,10 @@ class AnyServeServer:
         port: int = 8000,
         workers: int = 1,
         reload: bool = False,
-        ingress_bin: Optional[str] = None
+        ingress_bin: Optional[str] = None,
+        api_server: Optional[str] = None,
+        object_store: str = "/tmp/anyserve-objects",
+        replica_id: Optional[str] = None,
     ):
         self.app = app
         self.host = host
@@ -80,6 +100,9 @@ class AnyServeServer:
         self.workers = workers
         self.reload = reload
         self.ingress_bin = ingress_bin or self._find_ingress_binary()
+        self.api_server = api_server
+        self.object_store = object_store
+        self.replica_id = replica_id
 
         self.management_port = port + 1000  # e.g., 9000 for port 8000
 
@@ -222,7 +245,14 @@ class AnyServeServer:
                 "--app", self.app,
                 "--ingress", f"localhost:{self.management_port}",
                 "--worker-id", worker_id,
+                "--object-store", self.object_store,
             ]
+
+            # Add MVP options if configured
+            if self.api_server:
+                cmd.extend(["--api-server", self.api_server])
+            if self.replica_id:
+                cmd.extend(["--replica-id", self.replica_id])
 
             worker_proc = subprocess.Popen(
                 cmd,
