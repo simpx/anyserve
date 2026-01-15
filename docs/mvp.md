@@ -15,6 +15,7 @@
 3. **验证 Worker 动态管理**：启停 Worker，切换 Capability
 4. **验证 Object System 概念**：跨 Replica 数据传递（简化实现）
 5. **验证 Delegation**：请求转发机制
+6. **支持流式推理**：Server Streaming 模式，支持 LLM token 流式输出
 
 ### 简化策略
 
@@ -25,6 +26,7 @@
 | Object System | RDMA 直连，零拷贝 | 共享文件系统（目录） |
 | IPC | 零拷贝共享内存 | Unix Socket + protobuf |
 | 多机 | 自动发现，编排 | 用户手动配置 |
+| **流式接口** | 高性能双向流 | Server Streaming + SSE |
 
 ---
 
@@ -40,6 +42,7 @@
 │   │   - HTTP/gRPC 入口                                       │   │
 │   │   - Capability 注册表                                    │   │
 │   │   - 根据 Capability 路由到 Replica                       │   │
+│   │   - 流式响应 (SSE)                                       │   │
 │   │                                                          │   │
 │   │   Port: 8080                                             │   │
 │   └─────────────────────────────┬───────────────────────────┘   │
@@ -52,6 +55,7 @@
 │   │                   │ │                   │ │               ││
 │   │  Port: 50051      │ │  Port: 50052      │ │  Port: 50053  ││
 │   │  Caps: chat       │ │  Caps: embed      │ │  Caps: heavy  ││
+│   │  (stream support) │ │                   │ │               ││
 │   └───────────────────┘ └───────────────────┘ └───────────────┘│
 │               │                 │                 │             │
 │               └─────────────────┼─────────────────┘             │
@@ -84,6 +88,7 @@
 - 维护 Capability → Replica 注册表
 - 根据请求的 Capability 路由到对应 Replica
 - 转发请求，返回响应
+- **流式响应转发（gRPC stream → SSE）**
 
 **接口设计**：
 
@@ -99,13 +104,26 @@ POST /register
     ]
 }
 
-# 推理接口（Client 调用）
+# 推理接口（Client 调用）- 非流式
 POST /infer
 Headers:
     X-Capability-Type: chat
     X-Capability-Model: llama-70b
 Body:
     <KServe v2 ModelInferRequest>
+
+# 推理接口（Client 调用）- 流式
+POST /infer/stream
+Headers:
+    X-Capability-Type: chat
+    X-Capability-Model: llama-70b
+Body:
+    <KServe v2 ModelInferRequest>
+Response:
+    Content-Type: text/event-stream
+    data: <ModelStreamInferResponse serialized>
+    data: <ModelStreamInferResponse serialized>
+    ...
 
 # 查询注册表
 GET /registry
@@ -126,6 +144,7 @@ GET /registry
 - Capability 路由（替代 model name 路由）
 - Delegation 支持
 - Object System 集成（文件系统版）
+- **流式推理支持（ModelStreamInfer RPC）**
 
 **启动方式**（用户手动）：
 
@@ -178,31 +197,95 @@ result = anyserve.call(
 - 无 Lazy Read，直接读取
 - 无 Cache/Tracker，简单 TTL 清理
 
-### 3.4 Worker 定义
+### 3.4 Worker 定义（非流式）
 
-**MVP 目标**：支持 `@app.capability` 装饰器
+**MVP 目标**：支持 `@app.capability` 装饰器，使用原生 KServe proto 类型
 
 ```python
 from anyserve import AnyServe
+from anyserve.proto import ModelInferRequest, ModelInferResponse
 
 app = AnyServe()
 
 @app.capability(type="chat", model="llama-70b")
-def chat_handler(request, context):
+def chat_handler(request: ModelInferRequest, context) -> ModelInferResponse:
     # context.objects 可以访问 Object System
-    image_data = context.objects.get(request.inputs["image"])
+    # request 是原生 KServe proto 类型
 
-    # 处理逻辑...
+    # 构造原生 KServe 响应
+    return ModelInferResponse(
+        model_name="llama-70b",
+        id=request.id,
+        outputs=[
+            ModelInferResponse.InferOutputTensor(
+                name="output",
+                datatype="BYTES",
+                shape=[1],
+                contents=ModelInferResponse.InferTensorContents(
+                    bytes_contents=[b"Hello, world!"]
+                )
+            )
+        ]
+    )
+```
 
-    # 创建输出 Object
-    result_ref = context.objects.create(result_data)
+### 3.5 Worker 定义（流式）
 
-    return {"output": result_ref}
+**MVP 目标**：支持 `@app.capability(stream=True)` 装饰器
 
+```python
+from anyserve import AnyServe
+from anyserve.proto import (
+    ModelInferRequest,
+    ModelInferResponse,
+    ModelStreamInferResponse,
+)
 
-@app.capability(type="embed")
-def embed_handler(request, context):
-    ...
+app = AnyServe()
+
+@app.capability(type="chat", stream=True)
+def chat_stream_handler(request: ModelInferRequest, context, stream) -> None:
+    """
+    流式 handler：
+    - request: 原生 ModelInferRequest
+    - context: Context 对象（objects, call 等）
+    - stream: Stream 对象，用于发送流式响应
+    - 返回值: None（通过 stream.send() 发送响应）
+    """
+
+    # 模拟 token 生成
+    tokens = ["Hello", " ", "world", "!"]
+
+    for i, token in enumerate(tokens):
+        is_last = (i == len(tokens) - 1)
+
+        # 构造并发送原生 KServe 流式响应
+        response = ModelStreamInferResponse(
+            error_message="",
+            infer_response=ModelInferResponse(
+                model_name="llama-70b",
+                id=request.id,
+                outputs=[
+                    ModelInferResponse.InferOutputTensor(
+                        name="text_output",
+                        datatype="BYTES",
+                        shape=[1],
+                        contents=ModelInferResponse.InferTensorContents(
+                            bytes_contents=[token.encode()]
+                        )
+                    ),
+                    ModelInferResponse.InferOutputTensor(
+                        name="finish_reason",
+                        datatype="BYTES",
+                        shape=[1],
+                        contents=ModelInferResponse.InferTensorContents(
+                            bytes_contents=[b"stop" if is_last else b""]
+                        )
+                    )
+                ]
+            )
+        )
+        stream.send(response)
 ```
 
 ---
@@ -229,7 +312,7 @@ def embed_handler(request, context):
 4. 系统就绪
 ```
 
-### 4.2 请求流程
+### 4.2 请求流程（非流式）
 
 ```
 Client
@@ -256,13 +339,50 @@ Worker
   │
   ├── 执行 chat_handler(request, context)
   ├── 可能访问 Object System
-  ├── 返回响应
+  ├── 返回 ModelInferResponse
   │
   ↓
 ← 响应返回 Client
 ```
 
-### 4.3 Delegation 流程
+### 4.3 请求流程（流式）
+
+```
+Client
+  │
+  │ POST /infer/stream
+  │ Headers: X-Capability-Type=chat
+  │ Body: ModelInferRequest
+  │
+  ↓
+API Server
+  │
+  ├── 提取 Capability: {type: chat}
+  ├── 查找注册表 → Replica A (localhost:50051)
+  ├── 调用 Replica A 的 ModelStreamInfer RPC (gRPC server streaming)
+  │
+  ↓
+Replica A (Worker)
+  │
+  ├── 执行 chat_stream_handler(request, context, stream)
+  │
+  │   stream.send(ModelStreamInferResponse{token: "Hello"})
+  │   ─────────────────────────────────────────────────────→ SSE: data: {...}
+  │
+  │   stream.send(ModelStreamInferResponse{token: " "})
+  │   ─────────────────────────────────────────────────────→ SSE: data: {...}
+  │
+  │   stream.send(ModelStreamInferResponse{token: "world"})
+  │   ─────────────────────────────────────────────────────→ SSE: data: {...}
+  │
+  │   stream.send(ModelStreamInferResponse{token: "!", finish: "stop"})
+  │   ─────────────────────────────────────────────────────→ SSE: data: {...}
+  │
+  ↓
+← 流结束
+```
+
+### 4.4 Delegation 流程
 
 ```
 Client
@@ -299,7 +419,7 @@ Replica C
 ← 响应返回（经 Replica A）→ Client
 ```
 
-### 4.4 Object 传递流程
+### 4.5 Object 传递流程
 
 ```
 Replica A                              Replica B
@@ -342,7 +462,6 @@ Replica A                              Replica B
 | KServe v2 协议 | ✅ 完成 | `proto/grpc_predict_v2.proto` |
 | Worker 注册协议 | ✅ 完成 | `proto/worker_management.proto` |
 | 基础示例 | ✅ 完成 | `examples/basic/app.py` |
-
 | **API Server** | ✅ 完成 | `python/anyserve/api_server/` |
 | **Capability Registry** | ✅ 完成 | `python/anyserve/api_server/registry.py` |
 | **Capability Router** | ✅ 完成 | `python/anyserve/api_server/router.py` |
@@ -357,12 +476,13 @@ Replica A                              Replica B
 | 组件 | 状态 | 说明 |
 |------|------|------|
 | Worker 动态管理 | ⚠️ 部分 | ProcessSupervisor 存在但不完整 |
+| **流式接口** | ❌ 未开始 | Phase 7 |
 
 ---
 
 ## 6. 实现计划
 
-### Phase 1：API Server（演示用）
+### Phase 1：API Server（演示用） ✅ 已完成
 
 **目标**：实现一个简单的 API Server，作为请求入口和路由器
 
@@ -375,198 +495,382 @@ Replica A                              Replica B
 **任务列表**：
 
 - [x] **1.1 创建 FastAPI 应用骨架**
-  - 文件：`python/anyserve/api_server/__main__.py`
-  - 实现：FastAPI app，启动参数 --port
-
 - [x] **1.2 实现 Capability 注册表**
-  - 文件：`python/anyserve/api_server/registry.py`
-  - 数据结构：`Dict[str, List[ReplicaInfo]]`
-  - 方法：`register()`, `unregister()`, `lookup()`, `list_all()`
-
 - [x] **1.3 实现注册接口**
-  - `POST /register` - Replica 启动时调用
-  - `DELETE /unregister` - Replica 停止时调用
-  - `GET /registry` - 查询当前注册表
-
 - [x] **1.4 实现路由转发**
-  - `POST /infer` - 接收请求，根据 Header 中的 Capability 路由
-  - 转发到对应 Replica 的 gRPC 端口
-
 - [x] **1.5 编写测试**
-  - 单元测试：registry 逻辑
-  - 集成测试：API 接口
 
 ---
 
-### Phase 2：Capability 路由
+### Phase 2：Capability 路由 ✅ 已完成
 
 **目标**：将 model name 路由改为 Capability key-value 路由
-
-**修改文件**：
-- `cpp/server/model_registry.{cpp,hpp}` → 重命名/改造为 capability_registry
-- `python/anyserve/kserve.py` - 添加 `@app.capability` 装饰器
-- `python/anyserve/worker/__main__.py` - 注册 capability 而非 model
-- `proto/worker_management.proto` - 添加 capability 字段
 
 **任务列表**：
 
 - [x] **2.1 添加 `@app.capability` 装饰器**
-  - 文件：`python/anyserve/kserve.py`
-  - 语法：`@app.capability(type="chat", model="llama-70b")`
-  - 兼容：保留 `@app.model` 作为简化版
-
 - [x] **2.2 修改 Worker 注册逻辑**
-  - 文件：`python/anyserve/worker/__main__.py`
-  - 改动：注册时发送 capability dict 而非 model_name
-
 - [ ] **2.3 修改 proto 定义** *(MVP 中跳过，Python 层直接实现)*
-  - 文件：`proto/worker_management.proto`
-  - 添加：`map<string, string> capabilities` 字段
-
 - [ ] **2.4 修改 C++ ModelRegistry** *(MVP 中跳过，Python 层直接实现)*
-  - 文件：`cpp/server/model_registry.{cpp,hpp}`
-  - 改动：支持 capability key-value 匹配
-  - 可选：重命名为 CapabilityRegistry
-
 - [x] **2.5 Replica 向 API Server 注册**
-  - 修改 CLI：添加 `--api-server` 参数
-  - 启动时：向 API Server POST /register
-
 - [x] **2.6 更新示例**
-  - 文件：`examples/mvp_demo/` 目录
-  - 改动：使用 `@app.capability` 装饰器
 
 ---
 
-### Phase 3：Object System（文件版）
+### Phase 3：Object System（文件版） ✅ 已完成
 
 **目标**：实现简化版 Object System，基于共享文件系统
-
-**新建文件**：
-- `python/anyserve/objects/__init__.py`
-- `python/anyserve/objects/store.py`
 
 **任务列表**：
 
 - [x] **3.1 实现 ObjectStore 类**
-  - 文件：`python/anyserve/objects/store.py`
-  - 方法：`create(data, key=None) → obj_ref`
-  - 方法：`get(obj_ref) → data`
-  - 方法：`delete(obj_ref)`
-  - 配置：`--object-store /tmp/anyserve-objects`
-
 - [x] **3.2 实现 ObjRef 类**
-  - 属性：`path`, `key`, `size`, `created_at`
-  - 序列化：可以作为字符串传递
-
 - [x] **3.3 集成到 Worker Context**
-  - 修改：`python/anyserve/worker/__main__.py`
-  - Handler 签名：`def handler(request, context)`
-  - Context 包含：`context.objects` (ObjectStore 实例)
-
 - [x] **3.4 实现 anyserve.call()**
-  - 文件：`python/anyserve/kserve.py` (Context.call 方法)
-  - 功能：调用其他 Replica，自动传递 obj_ref
-
 - [x] **3.5 编写示例**
-  - 文件：`examples/mvp_demo/chat_app.py`
-  - 演示：跨 Replica 传递 Object
 
 ---
 
-### Phase 4：Delegation
+### Phase 4：Delegation ✅ 已完成
 
 **目标**：实现请求转发机制
-
-**修改文件**：
-- `cpp/server/anyserve_dispatcher.cpp` - 添加 delegation 逻辑
-- `python/anyserve/api_server/router.py` - 处理 delegation 请求
 
 **任务列表**：
 
 - [ ] **4.1 Dispatcher 检测无法处理的请求** *(MVP 中跳过，API Server 层实现)*
-  - 文件：`cpp/server/anyserve_dispatcher.cpp`
-  - 逻辑：lookup 失败 → 触发 delegation
-
 - [ ] **4.2 Dispatcher 发起 Delegation** *(MVP 中跳过，API Server 层实现)*
-  - 构造新请求，添加 Header：`X-Delegated-From: replica-id`
-  - 发送到 API Server
-
 - [x] **4.3 API Server 处理 Delegation**
-  - 文件：`python/anyserve/api_server/router.py`
-  - 逻辑：排除原始 Replica，重新路由
-
 - [x] **4.4 防止无限循环**
-  - 限制：最多 delegation 一次
-  - Header：`X-Delegation-Depth: 1`
-
 - [x] **4.5 编写测试**
-  - 场景：请求到错误 Replica → delegation → 正确 Replica
 
 ---
 
-### Phase 5：Worker 动态管理
+### Phase 5：Worker 动态管理 ⏳ 待实现
 
 **目标**：实现 Worker 的动态启停
-
-**修改文件**：
-- `cpp/server/process_supervisor.cpp` - 完善进程管理
-- `python/anyserve/worker/__main__.py` - 添加生命周期钩子
 
 **任务列表**：
 
 - [ ] **5.1 完善 ProcessSupervisor**
-  - 文件：`cpp/server/process_supervisor.cpp`
-  - 功能：启动、停止、健康检查
-
 - [ ] **5.2 实现 Worker Manager**
-  - 新建：`cpp/server/worker_manager.{cpp,hpp}`
-  - 功能：管理多个 Worker，感知状态
-
 - [ ] **5.3 Worker 资源声明**
-  - 语法：`@app.capability(type="chat", gpus=2)`
-  - 注册时上报资源需求
-
 - [ ] **5.4 实现 Worker 类（可选）**
-  - 文件：`python/anyserve/worker/base.py`
-  - 生命周期：`on_start()`, `on_stop()`
-
 - [ ] **5.5 动态启停演示**
-  - 场景：根据请求动态启动 Worker
-  - 场景：空闲时停止 Worker
 
 ---
 
-### Phase 6：集成演示
+### Phase 6：集成演示 ✅ 已完成
 
 **目标**：端到端演示所有功能
-
-**新建文件**：
-- `examples/mvp_demo/` - 完整演示
-- `examples/mvp_demo/run_demo.sh` - 一键启动脚本
 
 **任务列表**：
 
 - [x] **6.1 多 Replica 演示**
-  - API Server + 3 个 Replica
-  - 不同 Capability 分布
-
 - [x] **6.2 Capability 路由演示**
-  - 发送不同 Capability 请求
-  - 验证路由正确
-
 - [x] **6.3 Delegation 演示**
-  - 发送到"错误" Replica
-  - 验证自动转发
-
 - [x] **6.4 Object 传递演示**
-  - Replica A 创建 Object
-  - 调用 Replica B 时传递
-  - Replica B 读取 Object
-
 - [x] **6.5 文档**
-  - 演示说明：`examples/mvp_demo/README.md`
-  - 测试计划：`docs/test-plan.md`
+
+---
+
+### Phase 7：流式接口 ❌ 待实现
+
+**目标**：支持 Server Streaming 模式的流式推理
+
+#### 7.1 设计决策
+
+| 决策点 | 选择 | 理由 |
+|--------|------|------|
+| RPC 类型 | Server Streaming | 单请求多响应，满足 LLM 场景，实现简单 |
+| Handler API | `stream=True` 参数 | 同一装饰器，显式区分流式/非流式 |
+| Proto 类型 | 原生 KServe proto | MVP 保持简单，不做封装 |
+| HTTP 协议 | SSE (Server-Sent Events) | 简单，兼容性好，OpenAI API 同款 |
+
+#### 7.2 Wire Format
+
+流式响应基于 KServe 扩展的 `ModelStreamInferResponse`：
+
+```protobuf
+// 新增 RPC
+rpc ModelStreamInfer(ModelInferRequest) returns (stream ModelStreamInferResponse) {}
+
+// 新增消息
+message ModelStreamInferResponse {
+  string error_message = 1;           // 空字符串表示成功
+  ModelInferResponse infer_response = 2;  // 包含本次的 outputs
+}
+```
+
+每次流式响应发送一个完整的 `ModelStreamInferResponse`，包含：
+- `error_message`: 错误信息（空表示成功）
+- `infer_response`: 完整的 `ModelInferResponse`，其中 `outputs` 包含本次的数据
+
+**典型 LLM 场景的 outputs**：
+
+| Output Name | Type | 说明 |
+|-------------|------|------|
+| `text_output` | BYTES | 本次生成的 token |
+| `finish_reason` | BYTES | 空=继续，"stop"=正常结束，"length"=达到长度限制 |
+
+**流式响应序列示例**：
+
+```
+Response 1: text_output="Hello"    finish_reason=""
+Response 2: text_output=" world"   finish_reason=""
+Response 3: text_output="!"        finish_reason="stop"  ← 最后一条
+```
+
+#### 7.3 任务列表
+
+##### 7.3.1 Proto 层
+
+**修改文件**: `proto/grpc_predict_v2.proto`
+
+- [ ] **7.3.1.1 添加 ModelStreamInfer RPC**
+  ```protobuf
+  service GRPCInferenceService {
+    // 现有
+    rpc ModelInfer(ModelInferRequest) returns (ModelInferResponse) {}
+
+    // 新增
+    rpc ModelStreamInfer(ModelInferRequest) returns (stream ModelStreamInferResponse) {}
+  }
+  ```
+
+- [ ] **7.3.1.2 添加 ModelStreamInferResponse 消息**
+  ```protobuf
+  message ModelStreamInferResponse {
+    string error_message = 1;
+    ModelInferResponse infer_response = 2;
+  }
+  ```
+
+- [ ] **7.3.1.3 重新生成 Python proto 代码**
+  ```bash
+  python -m grpc_tools.protoc -I. --python_out=python/anyserve/_proto \
+      --grpc_python_out=python/anyserve/_proto proto/grpc_predict_v2.proto
+  ```
+
+##### 7.3.2 kserve.py 改造
+
+**修改文件**: `python/anyserve/kserve.py`
+
+- [ ] **7.3.2.1 移除 Python wrapper 类，改用原生 proto**
+  - 移除 `ModelInferRequest`, `ModelInferResponse` 等 Python dataclass
+  - 从 `anyserve._proto.grpc_predict_v2_pb2` 导入原生类型
+  - 保持向后兼容：在 `__init__.py` 中 re-export
+
+- [ ] **7.3.2.2 添加 Stream 类**
+  ```python
+  class Stream:
+      """gRPC stream 的薄封装"""
+
+      def __init__(self, grpc_context):
+          self._context = grpc_context
+
+      def send(self, response: ModelStreamInferResponse) -> None:
+          """发送原生 proto 消息到 gRPC stream"""
+          self._context.write(response)
+
+      def error(self, message: str) -> None:
+          """发送错误响应"""
+          self.send(ModelStreamInferResponse(error_message=message))
+  ```
+
+- [ ] **7.3.2.3 修改 @app.capability 装饰器**
+  ```python
+  def capability(self, stream: bool = False, **capability_attrs):
+      """
+      stream=False: 非流式
+          handler 签名: (request: ModelInferRequest, context) -> ModelInferResponse
+
+      stream=True: 流式
+          handler 签名: (request: ModelInferRequest, context, stream: Stream) -> None
+      """
+      def decorator(func):
+          # 检查参数个数区分流式/非流式
+          sig = inspect.signature(func)
+          params = list(sig.parameters.keys())
+
+          # 存储 handler 信息
+          self._capability_handlers.append({
+              'capability': Capability(**capability_attrs),
+              'handler': func,
+              'stream': stream,
+              'uses_context': len(params) >= 2,
+          })
+          return func
+      return decorator
+  ```
+
+- [ ] **7.3.2.4 添加 find_stream_handler 方法**
+  ```python
+  def find_stream_handler(self, capability_query: Dict) -> Optional[tuple]:
+      """查找流式 handler"""
+      for h in self._capability_handlers:
+          if h['stream'] and h['capability'].matches(capability_query):
+              return (h['handler'], h['uses_context'])
+      return None
+  ```
+
+##### 7.3.3 Worker 层
+
+**修改文件**: `python/anyserve/worker/__main__.py`
+
+- [ ] **7.3.3.1 实现 ModelStreamInfer RPC handler**
+  ```python
+  def ModelStreamInfer(self, request, context):
+      """gRPC server streaming handler"""
+      # 提取 capability
+      cap_query = self._extract_capability(request)
+
+      # 查找流式 handler
+      result = self.app.find_stream_handler(cap_query)
+      if not result:
+          # 发送错误
+          yield ModelStreamInferResponse(error_message="No stream handler found")
+          return
+
+      handler, uses_context = result
+
+      # 创建 Stream 对象
+      stream = Stream(context)
+
+      # 调用 handler
+      ctx = self._create_context()
+      handler(request, ctx, stream)
+
+      # handler 通过 stream.send() 发送响应
+  ```
+
+- [ ] **7.3.3.2 实现 Stream.send() 的实际逻辑**
+  - Stream 内部维护一个 queue
+  - handler 调用 send() 时放入 queue
+  - gRPC handler 从 queue 中 yield
+
+##### 7.3.4 API Server 层
+
+**修改文件**: `python/anyserve/api_server/router.py`
+
+- [ ] **7.3.4.1 添加 /infer/stream 端点**
+  ```python
+  from fastapi.responses import StreamingResponse
+
+  @app.post("/infer/stream")
+  async def infer_stream(
+      request: Request,
+      x_capability_type: Optional[str] = Header(None),
+      ...
+  ):
+      # 提取 capability
+      capability = extract_capability(headers)
+
+      # 查找 replica
+      replica = registry.lookup(capability)
+
+      # 调用 gRPC streaming
+      async def event_generator():
+          async with grpc.aio.insecure_channel(replica.endpoint) as channel:
+              stub = GRPCInferenceServiceStub(channel)
+              async for response in stub.ModelStreamInfer(grpc_request):
+                  # 序列化为 JSON 或 hex
+                  data = serialize_response(response)
+                  yield f"data: {data}\n\n"
+
+      return StreamingResponse(
+          event_generator(),
+          media_type="text/event-stream"
+      )
+  ```
+
+- [ ] **7.3.4.2 实现 gRPC stream → SSE 转换**
+  - 每个 `ModelStreamInferResponse` 转为一个 SSE event
+  - 序列化格式：JSON 或 protobuf hex
+
+##### 7.3.5 示例和测试
+
+**新建文件**:
+- `examples/mvp_demo/stream_app.py`
+- `tests/unit/kserve/test_stream.py`
+- `tests/integration/test_streaming.py`
+
+- [ ] **7.3.5.1 创建流式示例 stream_app.py**
+  ```python
+  from anyserve import AnyServe
+  from anyserve.proto import (
+      ModelInferRequest,
+      ModelInferResponse,
+      ModelStreamInferResponse,
+  )
+
+  app = AnyServe()
+
+  @app.capability(type="chat", stream=True)
+  def chat_stream(request: ModelInferRequest, context, stream):
+      """流式 chat handler"""
+      # 模拟 token 生成
+      tokens = ["Hello", " ", "world", "!"]
+
+      for i, token in enumerate(tokens):
+          is_last = (i == len(tokens) - 1)
+
+          response = ModelStreamInferResponse(
+              error_message="",
+              infer_response=ModelInferResponse(
+                  model_name="demo",
+                  id=request.id,
+                  outputs=[
+                      ModelInferResponse.InferOutputTensor(
+                          name="text_output",
+                          datatype="BYTES",
+                          shape=[1],
+                          contents=ModelInferResponse.InferTensorContents(
+                              bytes_contents=[token.encode()]
+                          )
+                      ),
+                      ModelInferResponse.InferOutputTensor(
+                          name="finish_reason",
+                          datatype="BYTES",
+                          shape=[1],
+                          contents=ModelInferResponse.InferTensorContents(
+                              bytes_contents=[b"stop" if is_last else b""]
+                          )
+                      )
+                  ]
+              )
+          )
+          stream.send(response)
+  ```
+
+- [ ] **7.3.5.2 更新 run_demo.sh 支持流式演示**
+
+- [ ] **7.3.5.3 添加流式单元测试**
+  - Stream 类测试
+  - @app.capability(stream=True) 装饰器测试
+  - handler 查找测试
+
+- [ ] **7.3.5.4 添加流式集成测试**
+  - 端到端流式请求测试
+  - SSE 响应解析测试
+
+##### 7.3.6 文档更新
+
+- [ ] **7.3.6.1 更新 examples/mvp_demo/README.md**
+- [ ] **7.3.6.2 更新 docs/test-plan.md**
+
+#### 7.4 文件改动清单
+
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `proto/grpc_predict_v2.proto` | 修改 | 添加 streaming RPC 和消息 |
+| `python/anyserve/_proto/*.py` | 重新生成 | proto 生成代码 |
+| `python/anyserve/kserve.py` | 大改 | 使用原生 proto，添加 Stream 类 |
+| `python/anyserve/__init__.py` | 修改 | re-export 原生 proto 类型 |
+| `python/anyserve/worker/__main__.py` | 修改 | 支持流式 handler |
+| `python/anyserve/api_server/router.py` | 修改 | 添加 SSE 端点 |
+| `examples/mvp_demo/stream_app.py` | 新建 | 流式示例 |
+| `tests/unit/kserve/test_stream.py` | 新建 | 流式单元测试 |
+| `tests/integration/test_streaming.py` | 新建 | 流式集成测试 |
 
 ---
 
@@ -613,7 +917,7 @@ curl -X POST http://localhost:8080/infer \
 
 ### 场景 3：Object 传递
 
-```bash
+```python
 # chat_app.py
 @app.capability(type="chat")
 def chat_handler(request, context):
@@ -622,7 +926,7 @@ def chat_handler(request, context):
     obj_ref = context.objects.create(embedding)
 
     # 调用 embed Replica 做进一步处理
-    result = anyserve.call(
+    result = context.call(
         capability={"type": "embed"},
         inputs={"embedding": obj_ref}
     )
@@ -630,7 +934,29 @@ def chat_handler(request, context):
     return result
 ```
 
-### 场景 4：Worker 动态启停
+### 场景 4：流式推理
+
+```bash
+# 终端 1：启动 API Server
+python -m anyserve.api_server --port 8080
+
+# 终端 2：启动 Replica（提供流式 chat capability）
+anyserve start --port 50051 --api-server http://localhost:8080 \
+    --app examples.stream_app:app
+
+# 终端 3：测试流式请求
+curl -N -X POST http://localhost:8080/infer/stream \
+    -H "X-Capability-Type: chat" \
+    -H "Content-Type: application/json" \
+    -d '{"model_name": "chat", "inputs": [...]}'
+
+# 输出（SSE 格式）：
+# data: {"text_output": "Hello", "finish_reason": ""}
+# data: {"text_output": " world", "finish_reason": ""}
+# data: {"text_output": "!", "finish_reason": "stop"}
+```
+
+### 场景 5：Worker 动态启停
 
 ```bash
 # 初始状态：Replica A 只有 chat Worker
@@ -660,6 +986,8 @@ curl -X POST ... -H "X-Capability-Type: heavy"
 - 高可用 / 故障恢复
 - 监控 / 指标
 - 多机自动发现
+- 双向流式 (Bidirectional Streaming)
+- WebSocket 协议
 
 这些功能将在后续版本中实现。
 
@@ -676,3 +1004,4 @@ MVP 完成时，应能演示：
 5. ⏳ Worker 可以动态启停 *(Phase 5 待实现)*
 6. ✅ 有清晰的使用文档和演示脚本
 7. ✅ 完整的测试套件 (92 tests passing)
+8. ⏳ 流式推理正常工作 *(Phase 7 待实现)*
