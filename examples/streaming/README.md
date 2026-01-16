@@ -1,18 +1,30 @@
-# Streaming Inference Example
+# Streaming Example
 
-> Work in progress - example coming soon
+Demonstrates streaming inference with AnyServe (Server Streaming).
 
-This example will demonstrate streaming inference with AnyServe, supporting real-time data processing and progressive result delivery.
+## Files
 
-## Planned Features
+- `app.py` - Server with streaming chat handler
+- `test_client.py` - gRPC streaming client
 
-- Streaming input/output
-- Real-time inference
-- Bidirectional streaming
-- Batch processing with streaming
-
-## Usage (Coming Soon)
+## Usage
 
 ```bash
-python examples/streaming/run_example.py
+# Terminal 1: Start server
+python examples/streaming/app.py
+
+# Terminal 2: Run client (connects to gRPC streaming port 9100)
+python examples/streaming/test_client.py
+```
+
+## Expected Output
+
+```
+=== Streaming Client Demo ===
+Connecting to: localhost:9100
+
+Sending streaming request...
+Tokens: Hello world!
+
+=== Streaming completed ===
 ```
