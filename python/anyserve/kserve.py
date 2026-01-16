@@ -257,7 +257,7 @@ class Context:
 
     Provides access to:
     - objects: ObjectStore instance for creating/reading objects
-    - call: Function to call other capabilities
+    - call: Function to call other capabilities/services
     - replica_id: ID of the current replica
     - capability: The capability that matched this handler
     """
@@ -265,12 +265,12 @@ class Context:
     def __init__(
         self,
         objects=None,
-        call_func: Optional[Callable] = None,
+        api_server: Optional[str] = None,
         replica_id: Optional[str] = None,
         capability: Optional[Capability] = None,
     ):
         self._objects = objects
-        self._call_func = call_func
+        self._api_server = api_server or "http://localhost:8080"
         self.replica_id = replica_id
         self.capability = capability
 
@@ -285,26 +285,59 @@ class Context:
 
     def call(
         self,
-        capability: Dict[str, PyAny],
+        model_name: str,
         inputs: Dict[str, PyAny],
-        **kwargs
-    ):
+        capability: Optional[Dict[str, PyAny]] = None,
+        endpoint: Optional[str] = None,
+    ) -> Dict[str, PyAny]:
         """
-        Call another capability (cross-Replica call).
+        Call another capability/service.
+
+        MVP implementation: Uses Client directly, bypassing Dispatcher.
+        Future: Will route through Dispatcher for full traffic proxy.
 
         Args:
-            capability: Capability query (e.g., {"type": "embed"})
-            inputs: Input data for the call
-            **kwargs: Additional options
+            model_name: Name of the model to call (required)
+            inputs: Input data dict. Supports two formats:
+                    - Simple list → auto-infer type and shape
+                    - Dict with data/shape/dtype → explicit tensor format
+            capability: Optional capability query for routing (e.g., {"type": "analyze"})
+            endpoint: Optional endpoint to send directly (e.g., "localhost:50052")
 
         Returns:
-            Response from the target capability handler
-        """
-        if self._call_func is None:
-            raise RuntimeError(
-                "Cross-Replica call not available. Make sure --api-server is configured."
+            Response dict from the target service
+
+        Routing priority:
+            1. endpoint specified → send directly to endpoint
+            2. capability specified → discover via API Server
+            3. model_name only → MVP not supported, raises error
+
+        Example:
+            result = context.call(
+                model_name="analyze",
+                inputs={"tokens": ["a,b,c"], "count": [3]},
+                capability={"type": "analyze"},
             )
-        return self._call_func(capability, inputs, **kwargs)
+        """
+        from anyserve.worker.client import Client
+
+        if endpoint:
+            # Direct send to specified endpoint
+            client = Client(endpoint=endpoint)
+        elif capability:
+            # Discover via API Server
+            client = Client(api_server=self._api_server, capability=capability)
+        else:
+            # MVP does not support model_name-only routing
+            raise ValueError(
+                "MVP requires either 'endpoint' or 'capability'. "
+                "model_name-only routing will be supported in future."
+            )
+
+        try:
+            return client.infer(model_name=model_name, inputs=inputs)
+        finally:
+            client.close()
 
 
 # =============================================================================

@@ -365,60 +365,10 @@ class Worker:
         """创建 Context 对象"""
         return Context(
             objects=self.object_store,
-            call_func=self._remote_call,
+            api_server=self.api_server,
             replica_id=self.replica_id,
             capability=capability,
         )
-
-    def _remote_call(
-        self,
-        capability: Dict[str, Any],
-        inputs: Dict[str, Any],
-        **kwargs
-    ) -> Dict[str, Any]:
-        """
-        执行跨 Replica 调用 (通过 API Server)
-        """
-        if not self.api_server:
-            raise RuntimeError("API Server not configured for cross-Replica calls")
-
-        # Build headers from capability
-        headers = {}
-        for key, value in capability.items():
-            header_name = f"X-Capability-{key.replace('_', '-').title()}"
-            headers[header_name] = str(value)
-
-        # Build request body
-        request_body = {
-            "model_name": capability.get("type", "unknown"),
-            "inputs": [
-                {
-                    "name": name,
-                    "datatype": "BYTES" if isinstance(value, (str, bytes)) else "FP32",
-                    "shape": [1],
-                    "contents": {
-                        "bytes_contents": [value] if isinstance(value, str) else [],
-                    }
-                }
-                for name, value in inputs.items()
-            ]
-        }
-
-        try:
-            response = httpx.post(
-                f"{self.api_server}/infer/json",
-                headers=headers,
-                json=request_body,
-                timeout=30.0,
-            )
-
-            if response.status_code == 200:
-                return response.json()
-            else:
-                raise RuntimeError(f"Remote call failed: {response.status_code} - {response.text}")
-
-        except Exception as e:
-            raise RuntimeError(f"Remote call error: {e}")
 
     def dispatch_request(self, request: ModelInferRequest) -> ModelInferResponse:
         """分发请求到对应的模型处理函数"""

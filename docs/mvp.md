@@ -473,6 +473,8 @@ Replica A                              Replica B
 | **Test Suite** | ✅ 完成 | `tests/` (92 tests passing) |
 | **Client Discovery Mode** | ✅ 完成 | `python/anyserve/worker/client.py` |
 | **Multiserver Example** | ✅ 完成 | `examples/multiserver/` |
+| **context.call() API** | ✅ 完成 | `python/anyserve/kserve.py` |
+| **Pipeline Example** | ✅ 完成 | `examples/pipeline/` |
 
 ### 待实现
 
@@ -935,6 +937,82 @@ client.close()
 
 ---
 
+### Phase 9：Pipeline Example (context.call) ✅ 已完成
+
+**目标**：演示多阶段处理流水线，Worker 之间通过 `context.call()` 互相调用
+
+#### 9.1 设计
+
+Pipeline 架构：
+```
+┌──────────────────┐
+│   API Server     │
+│   :8080          │
+└────────┬─────────┘
+         │
+    ┌────┼────┐────┐
+    ↓    ↓    ↓    ↓
+┌────────┐ ┌────────┐ ┌────────┐
+│Worker A│→│Worker B│→│Worker C│
+│ :50051 │ │ :50052 │ │ :50053 │
+│tokenize│ │analyze │ │ format │
+└────────┘ └────────┘ └────────┘
+```
+
+数据流：`Client -> tokenize -> analyze -> format -> Response`
+
+#### 9.2 context.call() API
+
+```python
+result = context.call(
+    model_name="analyze",           # 必填：目标模型名
+    inputs={...},                   # 必填：输入数据
+    capability={"type": "analyze"}, # 可选：用于路由
+    endpoint="localhost:50052",     # 可选：强制指定目标
+)
+```
+
+**路由优先级**：
+1. `endpoint` 指定 → 直接发送到该 endpoint
+2. `capability` 指定 → 通过 API Server 发现
+3. 只有 `model_name` → MVP 暂不支持，报错提示
+
+**inputs 两种格式**：
+- 简单 list → 自动推断类型和 shape（兼容现有 Client 用法）
+- dict with data/shape/dtype → 显式指定（tensor 场景）
+
+#### 9.3 Pipeline 各阶段
+
+| 阶段 | Worker | Port | Capability | 输入类型 | 功能 |
+|------|--------|------|------------|----------|------|
+| 1 | Worker A | 50051 | `tokenize` | BYTES (文本) | 文本分词，调用 analyze |
+| 2 | Worker B | 50052 | `analyze` | BYTES + INT32 | 统计分析，调用 format |
+| 3 | Worker C | 50053 | `format` | BYTES (JSON) + FP32 | 格式化输出报告 |
+
+#### 9.4 任务列表
+
+- [x] **9.4.1 更新 Context.call() 方法**
+  - 新签名：`call(model_name, inputs, capability=None, endpoint=None)`
+  - 内部使用 Client 直接调用（MVP 实现）
+
+- [x] **9.4.2 创建 Pipeline 示例**
+  - `examples/pipeline/worker_a.py` (tokenize)
+  - `examples/pipeline/worker_b.py` (analyze)
+  - `examples/pipeline/worker_c.py` (format)
+  - `examples/pipeline/test_client.py`
+  - `examples/pipeline/run.sh`
+  - `examples/pipeline/README.md`
+
+#### 9.5 文件改动
+
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `python/anyserve/kserve.py` | 修改 | 更新 Context.call() 签名和实现 |
+| `python/anyserve/worker/__main__.py` | 修改 | 更新 _create_context() 传递 api_server |
+| `examples/pipeline/*` | 新建 | Pipeline 示例 |
+
+---
+
 ## 7. 演示场景
 
 ### 场景 1：基本路由
@@ -1090,6 +1168,84 @@ print(client.replica_id)   # "worker1"
 python examples/multiserver/test_client.py
 ```
 
+### 场景 7：Pipeline 多阶段处理（context.call）
+
+**架构**：
+```
+┌──────────────────┐
+│   API Server     │
+│   :8080          │
+└────────┬─────────┘
+         │
+    ┌────┼────┐────┐
+    ↓    ↓    ↓    ↓
+┌────────┐ ┌────────┐ ┌────────┐
+│Worker A│→│Worker B│→│Worker C│
+│ :50051 │ │ :50052 │ │ :50053 │
+│tokenize│ │analyze │ │ format │
+└────────┘ └────────┘ └────────┘
+```
+
+**数据流**：`Client -> tokenize -> analyze -> format -> Response`
+
+**启动服务**：
+
+```bash
+# 启动所有服务（API Server + 3 Workers）
+./examples/pipeline/run.sh
+```
+
+**使用 context.call() 调用其他服务**：
+
+```python
+@app.capability(type="tokenize")
+def handler(request: ModelInferRequest, context: Context) -> ModelInferResponse:
+    # 处理输入
+    text = request.get_input("text").bytes_contents[0].decode()
+    tokens = tokenize(text)
+
+    # 通过 context.call() 调用下一阶段
+    result = context.call(
+        model_name="analyze",
+        capability={"type": "analyze"},
+        inputs={
+            "tokens": [",".join(tokens)],
+            "token_count": [len(tokens)],
+        }
+    )
+
+    return build_response(result)
+```
+
+**测试**：
+
+```bash
+# 运行测试客户端
+python examples/pipeline/test_client.py
+```
+
+**输出示例**：
+```
+==================================================
+         TEXT ANALYSIS REPORT
+==================================================
+
+INPUT TEXT PREVIEW:
+  "The quick brown fox jumps over the lazy dog..."
+
+STATISTICS:
+  Total tokens:     42
+  Unique tokens:    28
+  Avg token length: 4.12 characters
+  Vocabulary ratio: 66.7%
+
+TOP 5 MOST FREQUENT TOKENS:
+  1. 'the' (4x) ####
+  2. 'is' (3x) ###
+  ...
+==================================================
+```
+
 ---
 
 ## 8. 不在 MVP 范围
@@ -1123,3 +1279,4 @@ MVP 完成时，应能演示：
 7. ✅ 完整的测试套件 (92 tests passing)
 8. ✅ 流式推理正常工作
 9. ✅ Client 支持 Discovery 模式自动发现 Worker
+10. ✅ context.call() 支持 Worker 间调用，Pipeline 示例正常工作

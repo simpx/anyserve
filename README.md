@@ -111,7 +111,30 @@ result = client.infer("echo", {"text": ["hello"]})
 client.close()
 ```
 
-详见 [examples/multiserver/](examples/multiserver/) 示例。
+详见 [examples/multi_server/](examples/multi_server/) 示例。
+
+### Worker 间调用 (context.call)
+
+Worker 可以通过 `context.call()` 调用其他服务，构建处理流水线：
+
+```python
+@app.capability(type="tokenize")
+def handler(request: ModelInferRequest, context: Context) -> ModelInferResponse:
+    # 处理输入
+    text = request.get_input("text").bytes_contents[0].decode()
+    tokens = tokenize(text)
+
+    # 调用其他服务
+    result = context.call(
+        model_name="analyze",
+        capability={"type": "analyze"},  # 通过 API Server 路由
+        inputs={"tokens": [",".join(tokens)]}
+    )
+
+    return build_response(result)
+```
+
+详见 [examples/pipeline/](examples/pipeline/) 示例。
 
 ## 项目结构
 
