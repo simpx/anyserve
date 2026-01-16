@@ -1,11 +1,8 @@
-#!/usr/bin/env python3
 """
-AnyServe CLI - 类似 uvicorn 的启动器
+AnyServe run command - Run a custom AnyServe application.
 
 Usage:
-    anyserve app:app
-    anyserve app:app --port 8080 --workers 4
-    anyserve app:app --reload
+    anyserve run examples.basic.app:app --port 8000 --workers 1
 """
 
 import sys
@@ -13,73 +10,58 @@ import os
 import subprocess
 import time
 import signal
-import argparse
 import threading
 import importlib
+import uuid
 from pathlib import Path
 from typing import List, Optional
 
+import click
 import requests
 
 
-def main():
-    # Force unbuffered stdout for real-time log output
+@click.command()
+@click.argument("app", required=True)
+@click.option("--host", default="0.0.0.0", help="Bind host (default: 0.0.0.0)")
+@click.option("--port", type=int, default=8000, help="Bind port (default: 8000)")
+@click.option("--workers", type=int, default=1, help="Number of workers (default: 1)")
+@click.option("--reload", is_flag=True, help="Auto-reload on code changes (not implemented)")
+@click.option("--ingress-bin", default=None, help="Path to anyserve_dispatcher binary")
+@click.option("--api-server", default=None, help="API Server URL for capability registration")
+@click.option("--object-store", default="/tmp/anyserve-objects", help="Object store path")
+@click.option("--replica-id", default=None, help="Replica ID for API Server registration")
+def run_command(app, host, port, workers, reload, ingress_bin, api_server, object_store, replica_id):
+    """Run an AnyServe application.
+
+    Example:
+        anyserve run examples.basic.app:app --port 8000 --workers 1
+    """
+    # Force unbuffered stdout
     if hasattr(sys.stdout, 'reconfigure'):
         sys.stdout.reconfigure(line_buffering=True)
 
-    parser = argparse.ArgumentParser(
-        description='AnyServe Server - KServe v2 Model Serving',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  anyserve examples.kserve_server:app
-  anyserve examples.kserve_server:app --port 8080 --workers 4
-  anyserve examples.kserve_server:app --reload
-
-MVP Examples:
-  anyserve examples.chat_app:app --port 50051 --api-server http://localhost:8080
-  anyserve examples.embed_app:app --port 50052 --api-server http://localhost:8080
-        """
-    )
-    parser.add_argument('app', help='Application module (e.g., examples.kserve_server:app)')
-    parser.add_argument('--host', default='0.0.0.0', help='Bind host (default: 0.0.0.0)')
-    parser.add_argument('--port', type=int, default=8000, help='Bind port (default: 8000)')
-    parser.add_argument('--workers', type=int, default=1, help='Number of workers (default: 1)')
-    parser.add_argument('--reload', action='store_true', help='Auto-reload on code changes (not implemented yet)')
-    parser.add_argument('--ingress-bin', default=None, help='Path to anyserve_dispatcher binary (auto-detect if not specified)')
-    # MVP options
-    parser.add_argument('--api-server', default=None, help='API Server URL for capability registration (e.g., http://localhost:8080)')
-    parser.add_argument('--object-store', default='/tmp/anyserve-objects', help='Object store path (default: /tmp/anyserve-objects)')
-    parser.add_argument('--replica-id', default=None, help='Replica ID for API Server registration (auto-generated if not specified)')
-
-    args = parser.parse_args()
-
     # Generate replica ID if not provided
-    replica_id = args.replica_id
     if replica_id is None:
-        import uuid
-        replica_id = f"replica-{args.port}-{str(uuid.uuid4())[:8]}"
+        replica_id = f"replica-{port}-{str(uuid.uuid4())[:8]}"
 
-    # Create server instance
     server = AnyServeServer(
-        app=args.app,
-        host=args.host,
-        port=args.port,
-        workers=args.workers,
-        reload=args.reload,
-        ingress_bin=args.ingress_bin,
-        api_server=args.api_server,
-        object_store=args.object_store,
+        app=app,
+        host=host,
+        port=port,
+        workers=workers,
+        reload=reload,
+        ingress_bin=ingress_bin,
+        api_server=api_server,
+        object_store=object_store,
         replica_id=replica_id,
     )
 
-    # Start server
     try:
         server.start()
     except KeyboardInterrupt:
-        print("\n[AnyServe] Received Ctrl+C, shutting down...")
+        click.echo("\n[AnyServe] Received Ctrl+C, shutting down...")
     except Exception as e:
-        print(f"[AnyServe] Error: {e}")
+        click.echo(f"[AnyServe] Error: {e}")
         import traceback
         traceback.print_exc()
         sys.exit(1)
@@ -88,7 +70,7 @@ MVP Examples:
 
 
 class AnyServeServer:
-    """AnyServe 服务器管理器"""
+    """AnyServe server manager for running custom applications."""
 
     def __init__(
         self,
@@ -112,39 +94,32 @@ class AnyServeServer:
         self.object_store = object_store
         self.replica_id = replica_id
 
-        self.management_port = port + 1000  # e.g., 9000 for port 8000
+        self.management_port = port + 1000
 
         self.ingress_proc: Optional[subprocess.Popen] = None
         self.worker_procs: List[subprocess.Popen] = []
 
         self.running = False
         self.keepalive_thread: Optional[threading.Thread] = None
-        self.capabilities: List[dict] = []  # Loaded from app
+        self.capabilities: List[dict] = []
 
-        # Setup signal handlers
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
 
     def _signal_handler(self, signum, frame):
-        """Handle shutdown signals"""
         self.running = False
 
     def _find_ingress_binary(self) -> str:
-        """查找 anyserve_dispatcher 可执行文件"""
-        # Try multiple locations
+        """Find anyserve_dispatcher executable."""
         candidates = [
-            # Relative to current directory
             "./cpp/build/anyserve_dispatcher",
             "./build/anyserve_dispatcher",
-            # Relative to package installation
-            str(Path(__file__).parent.parent.parent / "cpp" / "build" / "anyserve_dispatcher"),
-            # In PATH
+            str(Path(__file__).parent.parent.parent.parent / "cpp" / "build" / "anyserve_dispatcher"),
             "anyserve_dispatcher",
         ]
 
         for path in candidates:
             if path == "anyserve_dispatcher":
-                # Check if it's in PATH
                 import shutil
                 if shutil.which(path):
                     return path
@@ -154,13 +129,12 @@ class AnyServeServer:
         raise FileNotFoundError(
             "anyserve_dispatcher binary not found. Please:\n"
             "  1. Compile C++ code: cd cpp && mkdir -p build && cd build && "
-            "conan install .. --build=missing && cmake .. -DCMAKE_TOOLCHAIN_FILE=../conan_toolchain.cmake && "
-            "cmake --build .\n"
+            "conan install .. --build=missing && cmake .. && cmake --build .\n"
             "  2. Or specify the path with --ingress-bin"
         )
 
     def _wait_for_port(self, host: str, port: int, timeout: int = 10) -> bool:
-        """等待端口可用"""
+        """Wait for a port to become available."""
         import socket
         start = time.time()
 
@@ -177,20 +151,16 @@ class AnyServeServer:
         return False
 
     def _load_app_capabilities(self):
-        """加载 app 模块并获取 capabilities"""
+        """Load app module and get capabilities."""
         try:
             module_path, app_name = self.app.rsplit(":", 1)
-
-            # Import the module
             module = importlib.import_module(module_path)
-
-            # Get the app object
             app_obj = getattr(module, app_name, None)
+
             if app_obj is None:
                 print(f"[AnyServe] Warning: Could not find '{app_name}' in '{module_path}'")
                 return
 
-            # Get capabilities from the app
             if hasattr(app_obj, 'get_capabilities'):
                 self.capabilities = app_obj.get_capabilities()
                 print(f"[AnyServe] Loaded {len(self.capabilities)} capabilities from app")
@@ -199,10 +169,9 @@ class AnyServeServer:
 
         except Exception as e:
             print(f"[AnyServe] Warning: Failed to load capabilities: {e}")
-            # Don't fail, just continue with empty capabilities
 
     def _register_to_api_server(self):
-        """POST /register 到 API Server (SSE 长连接，自动保活)"""
+        """Register with API Server via SSE long connection."""
         if not self.api_server:
             return
 
@@ -225,13 +194,12 @@ class AnyServeServer:
                     print(f"[AnyServe] Connecting to API Server: {url}")
                     with requests.post(url, json=payload, stream=True, timeout=(10, None)) as resp:
                         resp.raise_for_status()
-                        reconnect_delay = 1  # Reset on successful connection
+                        reconnect_delay = 1
 
                         for line in resp.iter_lines():
                             if not self.running:
                                 break
                             if line:
-                                # Parse SSE data line
                                 if line.startswith(b"data: "):
                                     data = line[6:].decode()
                                     msg = __import__("json").loads(data)
@@ -243,14 +211,14 @@ class AnyServeServer:
                         print(f"[AnyServe] API Server connection lost: {e}")
                         print(f"[AnyServe] Reconnecting in {reconnect_delay}s...")
                         time.sleep(reconnect_delay)
-                        reconnect_delay = min(reconnect_delay * 2, 30)  # Exponential backoff
+                        reconnect_delay = min(reconnect_delay * 2, 30)
 
         self.keepalive_thread = threading.Thread(target=register_loop, daemon=True)
         self.keepalive_thread.start()
         print("[AnyServe] API Server connection thread started")
 
     def start(self):
-        """启动服务器"""
+        """Start the server."""
         self.running = True
 
         print("[AnyServe] Starting AnyServe Server...")
@@ -262,30 +230,21 @@ class AnyServeServer:
             print(f"[AnyServe] API Server: {self.api_server}")
         print()
 
-        # 0. 加载 app，获取 capabilities
         self._load_app_capabilities()
-
-        # 1. 启动 C++ Ingress
         self._start_ingress()
 
-        # 2. 等待 Ingress 就绪
         print(f"[AnyServe] Waiting for Ingress to start...")
         if not self._wait_for_port("localhost", self.management_port, timeout=10):
             raise RuntimeError("Ingress failed to start within timeout")
 
         print(f"[AnyServe] Ingress started successfully")
 
-        # 3. 启动 Workers
         self._start_workers()
-
-        # 4. 等待 Workers 注册
         time.sleep(1)
 
-        # 5. 注册到 API Server (如果配置了，SSE 长连接)
         if self.api_server:
             self._register_to_api_server()
 
-        # 6. 打印启动信息
         print()
         print("=" * 60)
         print(f"[AnyServe] Server started successfully!")
@@ -299,11 +258,10 @@ class AnyServeServer:
         print("=" * 60)
         print()
 
-        # 7. 主循环 - 监控进程
         self._monitor_processes()
 
     def _start_ingress(self):
-        """启动 C++ Ingress 进程"""
+        """Start C++ Ingress process."""
         print(f"[AnyServe] Starting C++ Ingress: {self.ingress_bin}")
 
         cmd = [
@@ -317,11 +275,9 @@ class AnyServeServer:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            bufsize=1  # Line buffered
+            bufsize=1
         )
 
-        # Start a thread to read and print ingress output
-        import threading
         def read_ingress_output():
             if self.ingress_proc and self.ingress_proc.stdout:
                 for line in self.ingress_proc.stdout:
@@ -330,13 +286,11 @@ class AnyServeServer:
         threading.Thread(target=read_ingress_output, daemon=True).start()
 
     def _start_workers(self):
-        """启动 Python Worker 进程"""
-        # Set unbuffered output for worker subprocesses
+        """Start Python Worker processes."""
         env = os.environ.copy()
         env['PYTHONUNBUFFERED'] = '1'
 
         for i in range(self.workers):
-            # Include port in worker-id to avoid socket conflicts between CLI instances
             worker_id = f"worker-{self.port}-{i}"
             print(f"[AnyServe] Starting Worker {i+1}/{self.workers} (id={worker_id})")
 
@@ -349,9 +303,6 @@ class AnyServeServer:
                 "--object-store", self.object_store,
             ]
 
-            # Add replica-id if configured (for logging/debugging)
-            # NOTE: Don't pass --api-server to worker - CLI handles API server registration
-            # The worker's httpx.post() would block on SSE stream forever
             if self.replica_id:
                 cmd.extend(["--replica-id", self.replica_id])
 
@@ -365,51 +316,42 @@ class AnyServeServer:
             )
             self.worker_procs.append(worker_proc)
 
-            # Start a thread to read and print worker output
-            import threading
             def read_worker_output(proc, wid):
                 if proc.stdout:
                     for line in proc.stdout:
                         print(f"[{wid}] {line.rstrip()}")
 
             threading.Thread(target=read_worker_output, args=(worker_proc, worker_id), daemon=True).start()
-
-            # Small delay between workers
             time.sleep(0.2)
 
     def _monitor_processes(self):
-        """监控子进程"""
+        """Monitor child processes."""
         try:
             while self.running:
                 time.sleep(1)
 
-                # Check if ingress crashed
                 if self.ingress_proc and self.ingress_proc.poll() is not None:
                     print("[AnyServe] ERROR: Ingress process crashed!")
                     self.running = False
                     break
 
-                # Check if any worker crashed
                 for i, proc in enumerate(self.worker_procs):
                     if proc.poll() is not None:
                         print(f"[AnyServe] WARNING: Worker {i} crashed!")
-                        # Could implement restart logic here
 
         except KeyboardInterrupt:
             pass
 
     def stop(self):
-        """停止服务器"""
+        """Stop the server."""
         if not self.ingress_proc and not self.worker_procs:
             return
 
         print("\n[AnyServe] Shutting down...")
 
-        # 0. Stop keepalive (daemon thread will exit when self.running = False)
         if self.keepalive_thread:
             print("[AnyServe] Stopping keepalive connection...")
 
-        # 1. Stop workers first
         for i, proc in enumerate(self.worker_procs):
             try:
                 print(f"[AnyServe] Stopping Worker {i}...")
@@ -417,7 +359,6 @@ class AnyServeServer:
             except Exception as e:
                 print(f"[AnyServe] Error stopping worker {i}: {e}")
 
-        # 2. Wait for workers to exit (with timeout)
         for i, proc in enumerate(self.worker_procs):
             try:
                 proc.wait(timeout=5)
@@ -425,7 +366,6 @@ class AnyServeServer:
                 print(f"[AnyServe] Force killing Worker {i}")
                 proc.kill()
 
-        # 3. Stop ingress
         if self.ingress_proc:
             try:
                 print("[AnyServe] Stopping Ingress...")
@@ -437,7 +377,3 @@ class AnyServeServer:
 
         print("[AnyServe] All processes stopped")
         print("[AnyServe] Goodbye!")
-
-
-if __name__ == "__main__":
-    main()
