@@ -27,6 +27,7 @@
 | IPC | 零拷贝共享内存 | Unix Socket + protobuf |
 | 多机 | 自动发现，编排 | 用户手动配置 |
 | **流式接口** | 高性能双向流 | Server Streaming + SSE |
+| **CLI 入口** | 纯 C++ 二进制（类似 Triton） | Python CLI，Worker 必须用 Python 加载模型，无法避免 Python 依赖 |
 
 ---
 
