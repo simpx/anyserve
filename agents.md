@@ -39,7 +39,7 @@ just setup    # 安装 C++ 依赖（Conan）
 just build    # 编译 C++
 
 # 运行当前版本
-python -m anyserve.cli examples.basic.app:app --port 8000 --workers 1
+anyserve examples.basic.app:app --port 8000 --workers 1
 
 # 测试
 python examples/basic/run_example.py
@@ -74,3 +74,7 @@ curl http://localhost:8080/registry
 2. **按 Phase 顺序开发** - 不要跳跃，每个 Phase 有依赖关系
 3. **保持兼容** - `@app.model` 装饰器要保留，`@app.capability` 是新增
 4. **MVP 简化** - 不需要实现零拷贝、RDMA 等高级特性，用文件系统模拟 Object System
+5. **运行前清除代理** - gRPC 会受 http_proxy 影响导致 localhost 连接失败，运行示例或测试前需清除：
+   ```bash
+   unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY
+   ```

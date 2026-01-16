@@ -38,7 +38,7 @@ MVP Examples:
     parser.add_argument('--port', type=int, default=8000, help='Bind port (default: 8000)')
     parser.add_argument('--workers', type=int, default=1, help='Number of workers (default: 1)')
     parser.add_argument('--reload', action='store_true', help='Auto-reload on code changes (not implemented yet)')
-    parser.add_argument('--ingress-bin', default=None, help='Path to anyserve_ingress binary (auto-detect if not specified)')
+    parser.add_argument('--ingress-bin', default=None, help='Path to anyserve_dispatcher binary (auto-detect if not specified)')
     # MVP options
     parser.add_argument('--api-server', default=None, help='API Server URL for capability registration (e.g., http://localhost:8080)')
     parser.add_argument('--object-store', default='/tmp/anyserve-objects', help='Object store path (default: /tmp/anyserve-objects)')
@@ -120,20 +120,20 @@ class AnyServeServer:
         self.running = False
 
     def _find_ingress_binary(self) -> str:
-        """查找 anyserve_ingress 可执行文件"""
+        """查找 anyserve_dispatcher 可执行文件"""
         # Try multiple locations
         candidates = [
             # Relative to current directory
-            "./cpp/build/anyserve_ingress",
-            "./build/anyserve_ingress",
+            "./cpp/build/anyserve_dispatcher",
+            "./build/anyserve_dispatcher",
             # Relative to package installation
-            str(Path(__file__).parent.parent.parent / "cpp" / "build" / "anyserve_ingress"),
+            str(Path(__file__).parent.parent.parent / "cpp" / "build" / "anyserve_dispatcher"),
             # In PATH
-            "anyserve_ingress",
+            "anyserve_dispatcher",
         ]
 
         for path in candidates:
-            if path == "anyserve_ingress":
+            if path == "anyserve_dispatcher":
                 # Check if it's in PATH
                 import shutil
                 if shutil.which(path):
@@ -142,7 +142,7 @@ class AnyServeServer:
                 return os.path.abspath(path)
 
         raise FileNotFoundError(
-            "anyserve_ingress binary not found. Please:\n"
+            "anyserve_dispatcher binary not found. Please:\n"
             "  1. Compile C++ code: cd cpp && mkdir -p build && cd build && "
             "conan install .. --build=missing && cmake .. -DCMAKE_TOOLCHAIN_FILE=../conan_toolchain.cmake && "
             "cmake --build .\n"
