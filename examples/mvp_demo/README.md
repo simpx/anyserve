@@ -224,7 +224,7 @@ def stream_handler(request, context, stream):
 
 ```bash
 # Terminal 1: Start API Server
-python -m anyserve.api_server --port 8080
+python api_server/main.py --port 8080
 
 # Terminal 2: Start streaming worker
 anyserve examples.mvp_demo.stream_app:app --port 50051 --api-server http://localhost:8080

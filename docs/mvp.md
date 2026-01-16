@@ -298,7 +298,7 @@ def chat_stream_handler(request: ModelInferRequest, context, stream) -> None:
 
 ```
 1. 启动 API Server
-   $ python -m anyserve.api_server --port 8080
+   $ python api_server/main.py --port 8080
 
 2. 启动 Replica A
    $ anyserve start --port 50051 --api-server http://localhost:8080 --app app_a:app
@@ -463,12 +463,12 @@ Replica A                              Replica B
 | KServe v2 协议 | ✅ 完成 | `proto/grpc_predict_v2.proto` |
 | Worker 注册协议 | ✅ 完成 | `proto/worker_management.proto` |
 | 基础示例 | ✅ 完成 | `examples/basic/app.py` |
-| **API Server** | ✅ 完成 | `python/anyserve/api_server/` |
-| **Capability Registry** | ✅ 完成 | `python/anyserve/api_server/registry.py` |
-| **Capability Router** | ✅ 完成 | `python/anyserve/api_server/router.py` |
+| **API Server** | ✅ 完成 | `api_server/` |
+| **Capability Registry** | ✅ 完成 | `api_server/registry.py` |
+| **Capability Router** | ✅ 完成 | `api_server/router.py` |
 | **`@app.capability` 装饰器** | ✅ 完成 | `python/anyserve/kserve.py` |
 | **Object System** | ✅ 完成 | `python/anyserve/objects/store.py` |
-| **Delegation** | ✅ 完成 | `python/anyserve/api_server/router.py` |
+| **Delegation** | ✅ 完成 | `api_server/router.py` |
 | **MVP Demo** | ✅ 完成 | `examples/mvp_demo/` |
 | **Test Suite** | ✅ 完成 | `tests/` (92 tests passing) |
 
@@ -488,10 +488,10 @@ Replica A                              Replica B
 **目标**：实现一个简单的 API Server，作为请求入口和路由器
 
 **新建文件**：
-- `python/anyserve/api_server/__init__.py`
-- `python/anyserve/api_server/__main__.py`
-- `python/anyserve/api_server/registry.py`
-- `python/anyserve/api_server/router.py`
+- `api_server/__init__.py`
+- `api_server/main.py`
+- `api_server/registry.py`
+- `api_server/router.py`
 
 **任务列表**：
 
@@ -751,7 +751,7 @@ Response 3: text_output="!"        finish_reason="stop"  ← 最后一条
 
 ##### 7.3.4 API Server 层
 
-**修改文件**: `python/anyserve/api_server/router.py`
+**修改文件**: `api_server/router.py`
 
 - [x] **7.3.4.1 添加 /infer/stream 端点**
   ```python
@@ -868,7 +868,7 @@ Response 3: text_output="!"        finish_reason="stop"  ← 最后一条
 | `python/anyserve/kserve.py` | 大改 | 使用原生 proto，添加 Stream 类 |
 | `python/anyserve/__init__.py` | 修改 | re-export 原生 proto 类型 |
 | `python/anyserve/worker/__main__.py` | 修改 | 支持流式 handler |
-| `python/anyserve/api_server/router.py` | 修改 | 添加 SSE 端点 |
+| `api_server/router.py` | 修改 | 添加 SSE 端点 |
 | `examples/mvp_demo/stream_app.py` | 新建 | 流式示例 |
 | `tests/unit/kserve/test_stream.py` | 新建 | 流式单元测试 |
 | `tests/integration/test_streaming.py` | 新建 | 流式集成测试 |
@@ -881,7 +881,7 @@ Response 3: text_output="!"        finish_reason="stop"  ← 最后一条
 
 ```bash
 # 终端 1：启动 API Server
-python -m anyserve.api_server --port 8080
+python api_server/main.py --port 8080
 
 # 终端 2：启动 Replica A（提供 chat capability）
 anyserve start --port 50051 --api-server http://localhost:8080 \
@@ -939,7 +939,7 @@ def chat_handler(request, context):
 
 ```bash
 # 终端 1：启动 API Server
-python -m anyserve.api_server --port 8080
+python api_server/main.py --port 8080
 
 # 终端 2：启动 Replica（提供流式 chat capability）
 anyserve start --port 50051 --api-server http://localhost:8080 \

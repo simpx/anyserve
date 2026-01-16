@@ -28,13 +28,6 @@ def object_store(temp_dir):
 
 
 @pytest.fixture
-def capability_registry():
-    """Create a fresh CapabilityRegistry instance."""
-    from anyserve.api_server.registry import CapabilityRegistry
-    return CapabilityRegistry()
-
-
-@pytest.fixture
 def anyserve_app():
     """Create a fresh AnyServe app instance."""
     from anyserve import AnyServe

@@ -69,7 +69,7 @@ echo ""
 
 # Step 1: Start API Server
 echo -e "${GREEN}Step 1: Starting API Server on port $API_SERVER_PORT${NC}"
-python -m anyserve.api_server --port $API_SERVER_PORT &
+python api_server/main.py --port $API_SERVER_PORT &
 API_SERVER_PID=$!
 echo "API Server PID: $API_SERVER_PID"
 sleep 2

@@ -6,7 +6,7 @@ Usage:
     python examples/mvp_demo/test_stream_client.py
 
 Prerequisites:
-    1. Start API Server: python -m anyserve.api_server --port 8080
+    1. Start API Server: python api_server/main.py --port 8080
     2. Start streaming worker: anyserve examples.mvp_demo.stream_app:app --port 50051 --api-server http://localhost:8080
 """
 
@@ -101,7 +101,7 @@ def test_streaming():
     except httpx.ConnectError as e:
         print(f"\nConnection error: {e}")
         print("\nMake sure the API Server and streaming worker are running:")
-        print("  1. python -m anyserve.api_server --port 8080")
+        print("  1. python api_server/main.py --port 8080")
         print("  2. anyserve examples.mvp_demo.stream_app:app --port 50051 --api-server http://localhost:8080")
         return False
     except Exception as e:

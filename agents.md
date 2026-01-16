@@ -57,7 +57,7 @@ python examples/basic/run_example.py
 Phase 1 完成后应能：
 ```bash
 # 启动 API Server
-python -m anyserve.api_server --port 8080
+python api_server/main.py --port 8080
 
 # 测试注册接口
 curl -X POST http://localhost:8080/register \

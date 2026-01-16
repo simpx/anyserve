@@ -15,8 +15,61 @@ from dataclasses import dataclass, field
 import queue
 import threading
 
-# Import Capability from the canonical location
-from anyserve.api_server.registry import Capability
+# =============================================================================
+# Capability Definition
+# =============================================================================
+
+@dataclass
+class Capability:
+    """
+    Represents a Capability with key-value attributes.
+
+    Examples:
+        Capability(type="chat", model="llama-70b")
+        Capability(type="embed")
+        Capability(type="heavy", gpus=2)
+    """
+    attributes: Dict[str, PyAny] = field(default_factory=dict)
+
+    def __init__(self, **kwargs):
+        self.attributes = kwargs
+
+    def matches(self, query: Dict[str, PyAny]) -> bool:
+        """
+        Check if this capability matches a query.
+
+        A capability matches if all query keys exist in the capability
+        with the same values.
+        """
+        for key, value in query.items():
+            if key not in self.attributes:
+                return False
+            if self.attributes[key] != value:
+                return False
+        return True
+
+    def to_dict(self) -> Dict[str, PyAny]:
+        return self.attributes.copy()
+
+    def get(self, key: str, default: PyAny = None) -> PyAny:
+        """Get an attribute value by key."""
+        return self.attributes.get(key, default)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, PyAny]) -> "Capability":
+        return cls(**data)
+
+    def __hash__(self):
+        return hash(tuple(sorted(self.attributes.items())))
+
+    def __eq__(self, other):
+        if not isinstance(other, Capability):
+            return False
+        return self.attributes == other.attributes
+
+    def __repr__(self):
+        attrs = ", ".join(f"{k}={v!r}" for k, v in self.attributes.items())
+        return f"Capability({attrs})"
 
 
 # =============================================================================
@@ -195,7 +248,7 @@ class ModelInferResponse:
 
 
 # =============================================================================
-# Context Support (Capability is imported from api_server.registry)
+# Context Support
 # =============================================================================
 
 class Context:
