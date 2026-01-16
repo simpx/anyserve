@@ -2,33 +2,27 @@
 AnyServe Basic Example - Server Application
 ============================================
 
-This example demonstrates how to create model handlers using the KServe v2
-Inference Protocol with AnyServe.
+This example demonstrates how to create capability handlers using AnyServe.
 
-Models:
+Capabilities:
     - echo: Returns all inputs as outputs
     - add: Adds two INT32 tensors element-wise
-    - classifier:v1: Versioned model example
+    - classifier: Versioned capability example
 
 Usage:
     Development:  python examples/basic/app.py
-    Production:   python -m anyserve.cli examples.basic.app:app --port 8000 --workers 1
+    Production:   anyserve examples.basic.app:app --port 8000 --workers 1
 """
 
 import anyserve
 from anyserve import ModelInferRequest, ModelInferResponse
 
-# Create application instance (similar to FastAPI)
 app = anyserve.AnyServe()
 
 
-@app.model("echo")
-def echo_model(request: ModelInferRequest) -> ModelInferResponse:
-    """
-    Echo model - returns all inputs as outputs.
-
-    This demonstrates the basic structure of a KServe model handler.
-    """
+@app.capability(type="echo")
+def echo_handler(request: ModelInferRequest) -> ModelInferResponse:
+    """Echo capability - returns all inputs as outputs."""
     print(f"[echo] Processing request {request.id}")
 
     response = ModelInferResponse(
@@ -37,7 +31,6 @@ def echo_model(request: ModelInferRequest) -> ModelInferResponse:
         id=request.id,
     )
 
-    # Echo back all inputs as outputs
     for inp in request.inputs:
         out = response.add_output(
             name=f"output_{inp.name}",
@@ -49,31 +42,19 @@ def echo_model(request: ModelInferRequest) -> ModelInferResponse:
     return response
 
 
-@app.model("add")
-def add_model(request: ModelInferRequest) -> ModelInferResponse:
-    """
-    Add model - adds two INT32 tensors element-wise.
-
-    Expects:
-        - inputs[0]: "a" - INT32 tensor
-        - inputs[1]: "b" - INT32 tensor
-
-    Returns:
-        - outputs[0]: "sum" - INT32 tensor (a + b)
-    """
+@app.capability(type="add")
+def add_handler(request: ModelInferRequest) -> ModelInferResponse:
+    """Add capability - adds two INT32 tensors element-wise."""
     print(f"[add] Processing request {request.id}")
 
-    # Extract inputs
     a = request.get_input("a")
     b = request.get_input("b")
 
     if a is None or b is None:
         raise ValueError("Missing required inputs 'a' and 'b'")
 
-    # Compute sum
     result = [x + y for x, y in zip(a.int_contents, b.int_contents)]
 
-    # Build response
     response = ModelInferResponse(
         model_name=request.model_name,
         model_version=request.model_version,
@@ -89,27 +70,15 @@ def add_model(request: ModelInferRequest) -> ModelInferResponse:
     return response
 
 
-@app.model("classifier", version="v1")
+@app.capability(type="classifier", version="v1")
 def classifier_v1(request: ModelInferRequest) -> ModelInferResponse:
-    """
-    Versioned model example.
-
-    By specifying version="v1", this handler only matches requests
-    where model_version == "v1".
-
-    Expects:
-        - inputs[0]: "features" - FP32 tensor
-
-    Returns:
-        - outputs[0]: "class" - INT32 scalar (predicted class)
-    """
+    """Classifier capability with version."""
     print(f"[classifier:v1] Processing request {request.id}")
 
     features = request.get_input("features")
     if features is None:
         raise ValueError("Missing required input 'features'")
 
-    # Dummy classification: just return 42
     predicted_class = 42
 
     response = ModelInferResponse(
@@ -128,12 +97,7 @@ def classifier_v1(request: ModelInferRequest) -> ModelInferResponse:
 
 
 if __name__ == "__main__":
-    # Development mode: run with built-in server
     print("Starting AnyServe server in development mode...")
-    print("Available models:")
-    print("  - echo")
-    print("  - add")
-    print("  - classifier:v1")
+    print("Available capabilities: echo, add, classifier:v1")
     print()
-
     app.run(host="0.0.0.0", port=8000)

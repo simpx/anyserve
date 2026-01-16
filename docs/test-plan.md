@@ -96,7 +96,6 @@
 |---------|------|--------|
 | `test_capability_decorator` | @app.capability 装饰器 | P0 |
 | `test_capability_decorator_uses_context` | 检测 context 参数 | P0 |
-| `test_model_decorator_backward_compat` | @app.model 向后兼容 | P1 |
 | `test_get_capabilities` | 获取注册的 capabilities | P0 |
 | `test_find_handler_exact` | 精确查找 handler | P0 |
 | `test_find_handler_partial` | 部分匹配查找 | P0 |

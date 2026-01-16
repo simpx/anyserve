@@ -19,10 +19,11 @@ class TestCapabilityDecorator:
             return ModelInferResponse(model_name="chat")
 
         assert len(app._capability_handlers) == 1
-        cap, handler, uses_context = app._capability_handlers[0]
+        cap, handler, uses_context, stream = app._capability_handlers[0]
         assert cap.get("type") == "chat"
         assert cap.get("model") == "demo"
         assert handler is chat_handler
+        assert stream is False
 
     @pytest.mark.p0
     def test_capability_decorator_detects_context(self):
@@ -38,8 +39,8 @@ class TestCapabilityDecorator:
             pass
 
         # Find handlers
-        _, _, uses_ctx1 = app._capability_handlers[0]
-        _, _, uses_ctx2 = app._capability_handlers[1]
+        _, _, uses_ctx1, _ = app._capability_handlers[0]
+        _, _, uses_ctx2, _ = app._capability_handlers[1]
 
         assert uses_ctx1 is True
         assert uses_ctx2 is False
@@ -74,33 +75,6 @@ class TestCapabilityDecorator:
 
         # The decorated function should be the same
         assert original_func.__name__ == "original_func"
-
-
-class TestModelDecorator:
-    """Tests for @app.model decorator (backward compatibility)."""
-
-    @pytest.mark.p1
-    def test_model_decorator_registers_handler(self):
-        """Test @app.model registers the handler."""
-        app = AnyServe()
-
-        @app.model("my_model")
-        def model_handler(request):
-            return ModelInferResponse(model_name="my_model")
-
-        assert ("my_model", None) in app._local_registry
-        assert app._local_registry[("my_model", None)] is model_handler
-
-    @pytest.mark.p1
-    def test_model_decorator_with_version(self):
-        """Test @app.model with version."""
-        app = AnyServe()
-
-        @app.model("classifier", version="v2")
-        def classifier_v2(request):
-            return ModelInferResponse(model_name="classifier", model_version="v2")
-
-        assert ("classifier", "v2") in app._local_registry
 
 
 class TestGetCapabilities:

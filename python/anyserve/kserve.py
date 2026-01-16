@@ -2,11 +2,12 @@
 KServe v2 Inference Protocol support for AnyServe.
 
 This module provides Python wrappers for KServe's ModelInferRequest/Response
-and a simple decorator-based API for defining model handlers.
+and a simple decorator-based API for defining capability handlers.
 
-Supports both:
-- @app.model("name") - legacy model-based routing
-- @app.capability(type="chat", model="llama-70b") - capability-based routing
+Usage:
+    @app.capability(type="chat", model="llama-70b")
+    def chat_handler(request: ModelInferRequest, context: Context) -> ModelInferResponse:
+        ...
 """
 
 from typing import List, Optional, Callable, Dict, Any as PyAny, Union, Generator
@@ -344,16 +345,9 @@ class AnyServe:
     """
     AnyServe application class (similar to FastAPI).
 
-    This class provides the decorator-based API for defining model handlers.
+    This class provides the decorator-based API for defining capability handlers.
 
-    Usage (legacy model-based):
-        app = anyserve.AnyServe()
-
-        @app.model("my_model")
-        def handler(request: ModelInferRequest) -> ModelInferResponse:
-            return response
-
-    Usage (capability-based):
+    Usage:
         app = anyserve.AnyServe()
 
         @app.capability(type="chat", model="llama-70b")
@@ -369,38 +363,8 @@ class AnyServe:
     def __init__(self):
         # Legacy model registry: (model_name, model_version) -> handler
         self._local_registry: Dict[tuple, HandlerFunc] = {}
-        # Capability registry: List of (Capability, handler, uses_context)
+        # Capability registry: List of (Capability, handler, uses_context, stream)
         self._capability_handlers: List[tuple] = []
-
-    def model(self, name: str, version: Optional[str] = None):
-        """
-        Decorator to register a model handler for KServe v2 inference.
-
-        Args:
-            name: Model name (required)
-            version: Model version (optional). If None, this handler will match
-                     any version or requests without a version specified.
-
-        Usage:
-            @app.model("my_model")
-            def my_handler(request: ModelInferRequest) -> ModelInferResponse:
-                # Process request...
-                return response
-
-            @app.model("classifier", version="v2")
-            def classifier_v2(request: ModelInferRequest) -> ModelInferResponse:
-                # Process versioned request...
-                return response
-        """
-        def decorator(func: Callable[[ModelInferRequest], ModelInferResponse]):
-            # Register with (name, version) as key
-            key = (name, version)
-            self._local_registry[key] = func
-            # Also register globally for backward compatibility
-            _model_registry[key] = func
-            print(f"[AnyServe] Registered model handler: {name}" + (f" (version={version})" if version else ""))
-            return func
-        return decorator
 
     def capability(self, stream: bool = False, **capability_attrs):
         """
@@ -563,29 +527,6 @@ class AnyServe:
             replica_id=kwargs.get('replica_id'),
         )
         server.start()
-
-
-def model(name: str, version: Optional[str] = None):
-    """
-    Global decorator to register a model handler (backward compatibility).
-
-    For new code, prefer using app.model():
-        app = anyserve.AnyServe()
-        @app.model("name")
-        def handler(...): ...
-
-    Args:
-        name: Model name (required)
-        version: Model version (optional). If None, this handler will match
-                 any version or requests without a version specified.
-    """
-    def decorator(func: Callable[[ModelInferRequest], ModelInferResponse]):
-        # Register with (name, version) as key
-        key = (name, version)
-        _model_registry[key] = func
-        print(f"[AnyServe] Registered model handler: {name}" + (f" (version={version})" if version else ""))
-        return func
-    return decorator
 
 
 def infer(

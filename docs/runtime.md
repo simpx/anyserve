@@ -333,14 +333,14 @@ Client ← Error
 
 ## 7. Worker 定义方式
 
-### 7.1 当前：@app.model 装饰器
+### 7.1 当前：@app.capability 装饰器
 
 ```python
 from anyserve import AnyServe, ModelInferRequest, ModelInferResponse
 
 app = AnyServe()
 
-@app.model("echo")
+@app.capability(type="echo")
 def echo_handler(request: ModelInferRequest) -> ModelInferResponse:
     response = ModelInferResponse(
         model_name=request.model_name,
@@ -349,15 +349,6 @@ def echo_handler(request: ModelInferRequest) -> ModelInferResponse:
     # 处理逻辑...
     return response
 
-@app.model("classifier", version="v2")
-def classifier_v2(request: ModelInferRequest) -> ModelInferResponse:
-    # 版本化的 model
-    ...
-```
-
-### 7.2 未来：@app.capability 装饰器
-
-```python
 @app.capability(type="chat", model="llama-70b")
 def chat_handler(request):
     ...
@@ -367,7 +358,7 @@ def embed_handler(request):
     ...
 ```
 
-### 7.3 未来：Worker 类（生命周期钩子）
+### 7.2 未来：Worker 类（生命周期钩子）
 
 ```python
 @app.worker(
@@ -413,7 +404,7 @@ CLI 做的事情：
    ↓
 2. Worker 启动
    │
-   ├── 加载用户 app（执行 @app.model 装饰器）
+   ├── 加载用户 app（执行 @app.capability 装饰器）
    ├── 创建 Unix Socket (/tmp/anyserve-worker-xxx.sock)
    ├── 连接 Dispatcher (port 9000)
    │   └── RegisterModel(model_name, version, socket_path)
@@ -541,4 +532,4 @@ python examples/basic/run_example.py
 | Worker 转发 | `cpp/server/worker_client.cpp` | - |
 | Python Worker | `python/anyserve/worker/__main__.py` | 55 |
 | AnyServe 类 | `python/anyserve/kserve.py` | 195 |
-| model 装饰器 | `python/anyserve/kserve.py` | 215 |
+| capability 装饰器 | `python/anyserve/kserve.py` | 405 |

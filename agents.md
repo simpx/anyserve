@@ -72,7 +72,7 @@ curl http://localhost:8080/registry
 
 1. **先读文档再写代码** - architecture.md 和 mvp.md 包含了设计决策
 2. **按 Phase 顺序开发** - 不要跳跃，每个 Phase 有依赖关系
-3. **保持兼容** - `@app.model` 装饰器要保留，`@app.capability` 是新增
+3. **使用 @app.capability** - 使用 `@app.capability(type="xxx")` 装饰器定义 handler
 4. **MVP 简化** - 不需要实现零拷贝、RDMA 等高级特性，用文件系统模拟 Object System
 5. **运行前清除代理** - gRPC 会受 http_proxy 影响导致 localhost 连接失败，运行示例或测试前需清除：
    ```bash

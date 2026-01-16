@@ -62,20 +62,20 @@ pip install -e python/
 
 ```bash
 # 启动 server
-python -m anyserve.cli examples.basic.app:app --port 8000 --workers 1
+anyserve examples.basic.app:app --port 8000 --workers 1
 
 # 测试
 python examples/basic/run_example.py
 ```
 
-### 定义 Worker
+### 定义 Capability Handler
 
 ```python
 from anyserve import AnyServe, ModelInferRequest, ModelInferResponse
 
 app = AnyServe()
 
-@app.model("echo")
+@app.capability(type="echo")
 def echo_handler(request: ModelInferRequest) -> ModelInferResponse:
     response = ModelInferResponse(
         model_name=request.model_name,

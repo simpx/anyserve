@@ -22,6 +22,7 @@
 | 组件 | 生产版本 | MVP 版本 |
 |------|----------|----------|
 | API Server | 独立项目，高性能 | 简单实现，演示用 |
+| **API Server 数据链路** | gRPC 代理，Client 不感知 Replica | 只做路由查询，Client 直连 Replica |
 | 资源管理 | K8s Gang Scheduling | 用户手动运行进程 |
 | Object System | RDMA 直连，零拷贝 | 共享文件系统（目录） |
 | IPC | 零拷贝共享内存 | Unix Socket + protobuf |
@@ -458,7 +459,6 @@ Replica A                              Replica B
 | ModelRegistry | ✅ 完成 | `cpp/server/model_registry.cpp` |
 | WorkerClient (连接池) | ✅ 完成 | `cpp/server/worker_client.cpp` |
 | Python Worker | ✅ 完成 | `python/anyserve/worker/__main__.py` |
-| `@app.model` 装饰器 | ✅ 完成 | `python/anyserve/kserve.py` |
 | CLI 启动器 | ✅ 完成 | `python/anyserve/cli.py` |
 | KServe v2 协议 | ✅ 完成 | `proto/grpc_predict_v2.proto` |
 | Worker 注册协议 | ✅ 完成 | `proto/worker_management.proto` |

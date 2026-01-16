@@ -14,8 +14,12 @@ import subprocess
 import time
 import signal
 import argparse
+import threading
+import importlib
 from pathlib import Path
 from typing import List, Optional
+
+import requests
 
 
 def main():
@@ -114,6 +118,8 @@ class AnyServeServer:
         self.worker_procs: List[subprocess.Popen] = []
 
         self.running = False
+        self.keepalive_thread: Optional[threading.Thread] = None
+        self.capabilities: List[dict] = []  # Loaded from app
 
         # Setup signal handlers
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -170,6 +176,79 @@ class AnyServeServer:
 
         return False
 
+    def _load_app_capabilities(self):
+        """加载 app 模块并获取 capabilities"""
+        try:
+            module_path, app_name = self.app.rsplit(":", 1)
+
+            # Import the module
+            module = importlib.import_module(module_path)
+
+            # Get the app object
+            app_obj = getattr(module, app_name, None)
+            if app_obj is None:
+                print(f"[AnyServe] Warning: Could not find '{app_name}' in '{module_path}'")
+                return
+
+            # Get capabilities from the app
+            if hasattr(app_obj, 'get_capabilities'):
+                self.capabilities = app_obj.get_capabilities()
+                print(f"[AnyServe] Loaded {len(self.capabilities)} capabilities from app")
+            else:
+                print(f"[AnyServe] Warning: App has no get_capabilities() method")
+
+        except Exception as e:
+            print(f"[AnyServe] Warning: Failed to load capabilities: {e}")
+            # Don't fail, just continue with empty capabilities
+
+    def _register_to_api_server(self):
+        """POST /register 到 API Server (SSE 长连接，自动保活)"""
+        if not self.api_server:
+            return
+
+        endpoint = f"{self.host}:{self.port}"
+        if self.host == "0.0.0.0":
+            endpoint = f"localhost:{self.port}"
+
+        payload = {
+            "replica_id": self.replica_id,
+            "endpoint": endpoint,
+            "capabilities": self.capabilities,
+        }
+
+        def register_loop():
+            url = f"{self.api_server}/register"
+            reconnect_delay = 1
+
+            while self.running:
+                try:
+                    print(f"[AnyServe] Connecting to API Server: {url}")
+                    with requests.post(url, json=payload, stream=True, timeout=(10, None)) as resp:
+                        resp.raise_for_status()
+                        reconnect_delay = 1  # Reset on successful connection
+
+                        for line in resp.iter_lines():
+                            if not self.running:
+                                break
+                            if line:
+                                # Parse SSE data line
+                                if line.startswith(b"data: "):
+                                    data = line[6:].decode()
+                                    msg = __import__("json").loads(data)
+                                    if msg.get("status") == "registered":
+                                        print(f"[AnyServe] Registered to API Server: {msg}")
+
+                except requests.RequestException as e:
+                    if self.running:
+                        print(f"[AnyServe] API Server connection lost: {e}")
+                        print(f"[AnyServe] Reconnecting in {reconnect_delay}s...")
+                        time.sleep(reconnect_delay)
+                        reconnect_delay = min(reconnect_delay * 2, 30)  # Exponential backoff
+
+        self.keepalive_thread = threading.Thread(target=register_loop, daemon=True)
+        self.keepalive_thread.start()
+        print("[AnyServe] API Server connection thread started")
+
     def start(self):
         """启动服务器"""
         self.running = True
@@ -179,7 +258,12 @@ class AnyServeServer:
         print(f"[AnyServe] KServe gRPC port: {self.port}")
         print(f"[AnyServe] Management port: {self.management_port}")
         print(f"[AnyServe] Workers: {self.workers}")
+        if self.api_server:
+            print(f"[AnyServe] API Server: {self.api_server}")
         print()
+
+        # 0. 加载 app，获取 capabilities
+        self._load_app_capabilities()
 
         # 1. 启动 C++ Ingress
         self._start_ingress()
@@ -197,17 +281,25 @@ class AnyServeServer:
         # 4. 等待 Workers 注册
         time.sleep(1)
 
-        # 5. 打印启动信息
+        # 5. 注册到 API Server (如果配置了，SSE 长连接)
+        if self.api_server:
+            self._register_to_api_server()
+
+        # 6. 打印启动信息
         print()
         print("=" * 60)
         print(f"[AnyServe] Server started successfully!")
         print(f"[AnyServe] gRPC endpoint: {self.host}:{self.port}")
         print(f"[AnyServe] Workers: {self.workers}")
+        if self.api_server:
+            print(f"[AnyServe] Registered to API Server: {self.api_server}")
+            print(f"[AnyServe] Replica ID: {self.replica_id}")
+            print(f"[AnyServe] Capabilities: {self.capabilities}")
         print(f"[AnyServe] Press Ctrl+C to stop")
         print("=" * 60)
         print()
 
-        # 6. 主循环 - 监控进程
+        # 7. 主循环 - 监控进程
         self._monitor_processes()
 
     def _start_ingress(self):
@@ -311,6 +403,10 @@ class AnyServeServer:
             return
 
         print("\n[AnyServe] Shutting down...")
+
+        # 0. Stop keepalive (daemon thread will exit when self.running = False)
+        if self.keepalive_thread:
+            print("[AnyServe] Stopping keepalive connection...")
 
         # 1. Stop workers first
         for i, proc in enumerate(self.worker_procs):

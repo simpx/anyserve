@@ -2,7 +2,7 @@
 try:
     from anyserve.kserve import (
         AnyServe,
-        model, infer,
+        infer,
         ModelInferRequest, ModelInferResponse,
         InferInputTensor, InferOutputTensor, InferTensorContents,
         Capability, Context,
@@ -10,7 +10,7 @@ try:
 except ImportError:
     from .kserve import (
         AnyServe,
-        model, infer,
+        infer,
         ModelInferRequest, ModelInferResponse,
         InferInputTensor, InferOutputTensor, InferTensorContents,
         Capability, Context,
@@ -18,7 +18,7 @@ except ImportError:
 
 __all__ = [
     "AnyServe",
-    "model", "infer",
+    "infer",
     "ModelInferRequest", "ModelInferResponse",
     "InferInputTensor", "InferOutputTensor", "InferTensorContents",
     "Capability", "Context",
