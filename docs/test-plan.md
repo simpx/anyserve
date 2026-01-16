@@ -102,6 +102,20 @@
 | `test_find_handler_partial` | 部分匹配查找 | P0 |
 | `test_find_handler_no_match` | 无匹配返回 None | P0 |
 
+#### test_stream.py (Phase 7)
+
+| 测试用例 | 描述 | 优先级 |
+|---------|------|--------|
+| `test_stream_init` | Stream 初始化 | P0 |
+| `test_stream_send` | 发送消息到 stream | P0 |
+| `test_stream_send_multiple` | 发送多个消息 | P0 |
+| `test_stream_close` | 关闭 stream | P0 |
+| `test_stream_send_after_close_raises` | 关闭后发送抛出异常 | P0 |
+| `test_stream_error` | 发送错误响应 | P0 |
+| `test_stream_iter_responses` | iter_responses 生成器 | P0 |
+| `test_stream_iterator_protocol` | 迭代器协议 | P1 |
+| `test_stream_threaded_producer_consumer` | 多线程生产者-消费者模式 | P0 |
+
 ---
 
 ### 2.4 API Server Router (`tests/unit/api_server/`)
@@ -139,6 +153,21 @@
 | `test_create_and_read_object` | 创建并读取对象 | P0 |
 | `test_object_ref_serialization` | ObjRef 序列化传递 | P0 |
 
+### test_streaming.py (Phase 7)
+
+| 测试用例 | 描述 | 优先级 |
+|---------|------|--------|
+| `test_register_streaming_handler` | 注册流式 handler | P0 |
+| `test_find_stream_handler` | 查找流式 handler | P0 |
+| `test_find_stream_handler_not_found` | 流式 handler 未找到 | P0 |
+| `test_find_handler_excludes_stream` | 非流式查找排除流式 handler | P0 |
+| `test_find_any_handler_finds_stream` | find_any_handler 查找流式 | P0 |
+| `test_both_streaming_and_non_streaming` | 同时支持流式和非流式 | P0 |
+| `test_streaming_handler_full_flow` | 完整流式执行流程 | P0 |
+| `test_streaming_handler_with_delay` | 带延迟的流式 handler | P1 |
+| `test_streaming_handler_error` | 流式 handler 错误处理 | P0 |
+| `test_stream_handler_with_multiple_attrs` | 多属性流式 handler | P1 |
+
 ---
 
 ## 4. 端到端测试 (`examples/mvp_demo/`)
@@ -152,6 +181,13 @@
 | `test_embed_capability` | 测试 embed 路由 |
 | `test_heavy_capability` | 测试 heavy 路由 |
 | `test_object_passing` | 测试对象传递 |
+
+### test_stream_client.py (Phase 7)
+
+| 测试用例 | 描述 |
+|---------|------|
+| `test_streaming` | 测试流式推理端点 |
+| `test_non_streaming` | 测试非流式端点对比 |
 
 ---
 

@@ -171,6 +171,85 @@ Environment variables and command line options:
 | `--object-store` | Object store path | /tmp/anyserve-objects |
 | `--replica-id` | Replica identifier | Auto-generated |
 
+## Streaming Inference (Phase 7)
+
+AnyServe supports streaming inference for LLM token generation.
+
+### Streaming Handler
+
+```python
+from anyserve import AnyServe
+from anyserve._proto import grpc_predict_v2_pb2
+
+app = AnyServe()
+
+@app.capability(type="chat", stream=True)
+def stream_handler(request, context, stream):
+    """
+    Streaming handler receives a Stream object.
+    Use stream.send() to send each token.
+    """
+    tokens = ["Hello", " ", "world", "!"]
+
+    for i, token in enumerate(tokens):
+        is_last = (i == len(tokens) - 1)
+
+        response = grpc_predict_v2_pb2.ModelStreamInferResponse(
+            infer_response=grpc_predict_v2_pb2.ModelInferResponse(
+                model_name="chat",
+                id=request.id,
+            )
+        )
+
+        # Add text_output
+        text_output = response.infer_response.outputs.add()
+        text_output.name = "text_output"
+        text_output.datatype = "BYTES"
+        text_output.shape.append(1)
+        text_output.contents.bytes_contents.append(token.encode())
+
+        # Add finish_reason
+        finish_output = response.infer_response.outputs.add()
+        finish_output.name = "finish_reason"
+        finish_output.datatype = "BYTES"
+        finish_output.shape.append(1)
+        finish_output.contents.bytes_contents.append(
+            b"stop" if is_last else b""
+        )
+
+        stream.send(response)
+```
+
+### Testing Streaming
+
+```bash
+# Terminal 1: Start API Server
+python -m anyserve.api_server --port 8080
+
+# Terminal 2: Start streaming worker
+anyserve examples.mvp_demo.stream_app:app --port 50051 --api-server http://localhost:8080
+
+# Terminal 3: Test streaming
+curl -N -X POST http://localhost:8080/infer/stream \
+  -H 'Content-Type: application/json' \
+  -H 'X-Capability-Type: chat' \
+  -d '{"model_name": "chat", "inputs": [{"name": "text", "datatype": "BYTES", "shape": [1], "contents": {"bytes_contents": ["Hello"]}}]}'
+
+# Or use the test client
+python examples/mvp_demo/test_stream_client.py
+```
+
+### SSE Response Format
+
+The `/infer/stream` endpoint returns Server-Sent Events:
+
+```
+data: {"model_name": "chat", "outputs": [{"name": "text_output", "contents": {"bytes_contents": ["Hello"]}}]}
+data: {"model_name": "chat", "outputs": [{"name": "text_output", "contents": {"bytes_contents": [" "]}}]}
+data: {"model_name": "chat", "outputs": [{"name": "text_output", "contents": {"bytes_contents": ["world"]}}]}
+data: {"model_name": "chat", "outputs": [{"name": "text_output", "contents": {"bytes_contents": ["!"]}}, {"name": "finish_reason", "contents": {"bytes_contents": ["stop"]}}]}
+```
+
 ## Next Steps
 
 This MVP demonstrates the core architecture. Future enhancements include:
