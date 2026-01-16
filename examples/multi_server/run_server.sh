@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Multi-Server Example Runner
+# Multi-Server Example - Start Servers
 #
 # This script starts:
 # 1. API Server on port 8080
@@ -8,10 +8,10 @@
 # 3. Worker 2 (divide, power) on port 50052
 #
 # Usage:
-#   ./examples/multiserver/run.sh
+#   ./examples/multi_server/run_server.sh
 #
-# Then run the test client:
-#   python3 examples/multiserver/test_client.py
+# Then run the test client in another terminal:
+#   ./examples/multi_server/run_client.sh
 
 set -e
 
@@ -85,7 +85,7 @@ echo -e "${GREEN}      API Server started (PID: $API_SERVER_PID)${NC}"
 
 # 2. Start Worker 1 (multiply)
 echo -e "${GREEN}[2/3] Starting Worker 1 (multiply) on port 50051...${NC}"
-python3 -m anyserve.cli examples.multiserver.worker1:app --port 50051 --api-server http://localhost:8080 --replica-id worker1 &
+python3 -m anyserve.cli examples.multi_server.worker1:app --port 50051 --api-server http://localhost:8080 --replica-id worker1 &
 WORKER1_PID=$!
 sleep 5
 
@@ -101,7 +101,7 @@ echo -e "${GREEN}      Worker 1 started (PID: $WORKER1_PID)${NC}"
 
 # 3. Start Worker 2 (divide, power)
 echo -e "${GREEN}[3/3] Starting Worker 2 (divide, power) on port 50052...${NC}"
-python3 -m anyserve.cli examples.multiserver.worker2:app --port 50052 --api-server http://localhost:8080 --replica-id worker2 &
+python3 -m anyserve.cli examples.multi_server.worker2:app --port 50052 --api-server http://localhost:8080 --replica-id worker2 &
 WORKER2_PID=$!
 sleep 5
 
@@ -125,7 +125,7 @@ echo -e "Worker 2:    localhost:50052 (divide, power)"
 echo ""
 echo -e "View registry: ${YELLOW}curl http://localhost:8080/registry | jq${NC}"
 echo ""
-echo -e "Run test client: ${YELLOW}python3 examples/multiserver/test_client.py${NC}"
+echo -e "Run test client: ${YELLOW}./examples/multi_server/run_client.sh${NC}"
 echo ""
 echo -e "${GREEN}============================================${NC}"
 echo -e "Press Ctrl+C to stop all services"

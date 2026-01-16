@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Pipeline Example Runner
+# Pipeline Example - Start Servers
 #
 # This script starts:
 # 1. API Server on port 8080
@@ -9,10 +9,10 @@
 # 4. Worker C (format) on port 50053
 #
 # Usage:
-#   ./examples/pipeline/run.sh
+#   ./examples/pipeline/run_server.sh
 #
-# Then run the test client:
-#   python3 examples/pipeline/test_client.py
+# Then run the test client in another terminal:
+#   ./examples/pipeline/run_client.sh
 
 set -e
 
@@ -152,7 +152,7 @@ echo -e "  Worker C:    localhost:50053 (${CYAN}format${NC})   - Stage 3"
 echo ""
 echo -e "View registry: ${YELLOW}curl http://localhost:8080/registry | jq${NC}"
 echo ""
-echo -e "Run test client: ${YELLOW}python3 examples/pipeline/test_client.py${NC}"
+echo -e "Run test client: ${YELLOW}./examples/pipeline/run_client.sh${NC}"
 echo ""
 echo -e "${GREEN}============================================${NC}"
 echo -e "Press Ctrl+C to stop all services"

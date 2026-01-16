@@ -12,24 +12,15 @@ This example demonstrates the fundamental usage of AnyServe with three simple ca
 
 - [app.py](app.py) - Server application with capability handlers
 - [test_client.py](test_client.py) - Test client
-- [run_example.py](run_example.py) - Complete workflow runner
 
 ## Quick Start
 
-### Option 1: Run Complete Example (Recommended)
-
-```bash
-python examples/basic/run_example.py
-```
-
-### Option 2: Manual Testing
-
 ```bash
 # Terminal 1: Start server
-anyserve examples.basic.app:app --port 8000 --workers 1
+./examples/basic/run_server.sh
 
 # Terminal 2: Run tests
-python examples/basic/test_client.py
+./examples/basic/run_client.sh
 ```
 
 ## Expected Output
@@ -68,4 +59,4 @@ result = client.infer(
 client.close()
 ```
 
-For multi-worker scenarios with automatic endpoint discovery, see [examples/multiserver](../multiserver/).
+For multi-worker scenarios with automatic endpoint discovery, see [examples/multi_server](../multi_server/).

@@ -7,8 +7,8 @@ It connects to an API Server to discover Worker endpoints and then
 calls multiple capabilities across different workers.
 
 Prerequisites:
-    1. Start the servers: ./examples/multiserver/run.sh
-    2. Run this client:   python examples/multiserver/test_client.py
+    1. Start the servers: ./examples/multi_server/run_server.sh
+    2. Run this client:   ./examples/multi_server/run_client.sh
 
 Capabilities tested:
     - multiply (Worker 1): Multiply two INT32 tensors

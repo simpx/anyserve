@@ -4,7 +4,7 @@ Worker 1 - Single Capability (multiply)
 This worker provides one capability: multiply two INT32 tensors.
 
 Usage:
-    anyserve examples.multiserver.worker1:app --port 50051 --api-server http://localhost:8080
+    anyserve examples.multi_server.worker1:app --port 50051 --api-server http://localhost:8080
 """
 
 import anyserve

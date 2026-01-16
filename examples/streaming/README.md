@@ -11,10 +11,10 @@ Demonstrates streaming inference with AnyServe (Server Streaming).
 
 ```bash
 # Terminal 1: Start server
-python examples/streaming/app.py
+./examples/streaming/run_server.sh
 
 # Terminal 2: Run client (connects to gRPC streaming port 9100)
-python examples/streaming/test_client.py
+./examples/streaming/run_client.sh
 ```
 
 ## Expected Output

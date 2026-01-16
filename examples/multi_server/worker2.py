@@ -6,7 +6,7 @@ This worker provides two capabilities:
 - power: Raise FP32 base to INT32 exponent
 
 Usage:
-    anyserve examples.multiserver.worker2:app --port 50052 --api-server http://localhost:8080
+    anyserve examples.multi_server.worker2:app --port 50052 --api-server http://localhost:8080
 """
 
 import anyserve

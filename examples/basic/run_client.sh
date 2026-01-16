@@ -10,7 +10,15 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 cd "$PROJECT_ROOT"
 
+# Activate venv if it exists
+if [ -d "$PROJECT_ROOT/.venv" ]; then
+    source "$PROJECT_ROOT/.venv/bin/activate"
+fi
+
+# Set PYTHONPATH
+export PYTHONPATH="$PROJECT_ROOT/python:$PROJECT_ROOT:$PYTHONPATH"
+
 echo "Running test client..."
 echo ""
 
-python examples/basic/test_client.py "$@"
+python3 examples/basic/test_client.py "$@"

@@ -1,4 +1,4 @@
-# Multiserver Example
+# Multi-Server Example
 
 This example demonstrates **Client Discovery Mode** with multiple Workers registered to an API Server.
 
@@ -34,26 +34,15 @@ This example demonstrates **Client Discovery Mode** with multiple Workers regist
 
 ## Quick Start
 
-### 1. Start All Services
-
 ```bash
-./examples/multiserver/run.sh
+# Terminal 1: Start all services
+./examples/multi_server/run_server.sh
+
+# Terminal 2: Run test client
+./examples/multi_server/run_client.sh
 ```
 
-This starts:
-- API Server on port 8080
-- Worker 1 (multiply) on port 50051
-- Worker 2 (divide, power) on port 50052
-
-### 2. Run Test Client
-
-In another terminal:
-
-```bash
-python examples/multiserver/test_client.py
-```
-
-### 3. Manual Testing
+### Manual Testing
 
 ```bash
 # Check registry
@@ -133,7 +122,8 @@ Client(
 | `worker1.py` | Worker with `multiply` capability |
 | `worker2.py` | Worker with `divide` and `power` capabilities |
 | `test_client.py` | Test client demonstrating both connection modes |
-| `run.sh` | Script to start all services |
+| `run_server.sh` | Script to start all services |
+| `run_client.sh` | Script to run the test client |
 
 ## Expected Output
 

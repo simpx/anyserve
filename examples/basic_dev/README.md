@@ -12,15 +12,13 @@ Development mode runs the application directly via `python app.py` instead of us
 
 ## Usage
 
-1. Start the server (in development mode):
-   ```bash
-   ./start_server.sh
-   ```
+```bash
+# Terminal 1: Start the server (in development mode)
+./examples/basic_dev/run_server.sh
 
-2. In another terminal, run the client:
-   ```bash
-   ./start_client.sh
-   ```
+# Terminal 2: Run the client
+./examples/basic_dev/run_client.sh
+```
 
 ## Note
 
