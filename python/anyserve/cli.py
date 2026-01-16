@@ -336,7 +336,8 @@ class AnyServeServer:
         env['PYTHONUNBUFFERED'] = '1'
 
         for i in range(self.workers):
-            worker_id = f"worker-{i}"
+            # Include port in worker-id to avoid socket conflicts between CLI instances
+            worker_id = f"worker-{self.port}-{i}"
             print(f"[AnyServe] Starting Worker {i+1}/{self.workers} (id={worker_id})")
 
             cmd = [
@@ -348,9 +349,9 @@ class AnyServeServer:
                 "--object-store", self.object_store,
             ]
 
-            # Add MVP options if configured
-            if self.api_server:
-                cmd.extend(["--api-server", self.api_server])
+            # Add replica-id if configured (for logging/debugging)
+            # NOTE: Don't pass --api-server to worker - CLI handles API server registration
+            # The worker's httpx.post() would block on SSE stream forever
             if self.replica_id:
                 cmd.extend(["--replica-id", self.replica_id])
 

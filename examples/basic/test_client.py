@@ -73,7 +73,7 @@ def main():
     print(f"Connecting to: {target}\n")
 
     # Create client
-    client = Client(target=target)
+    client = Client(endpoint=target)
 
     # Check if server is alive
     if not client.is_alive():
