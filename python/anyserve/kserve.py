@@ -502,25 +502,67 @@ class AnyServe:
                 return (handler, uses_context, cap, is_stream)
         return None
 
-    def run(self, host: str = "0.0.0.0", port: int = 8000, **kwargs):
+    def run(self, host: str = "0.0.0.0", port: int = 8000, workers: int = 1, **kwargs):
         """
-        Run the AnyServe server.
+        Run the AnyServe server in development mode.
 
+        This starts the full server stack (Dispatcher + Worker) for local development.
         For production, use the CLI instead:
             anyserve your_module:app --port 8000
 
         Args:
             host: Host to bind to
             port: Port to bind to
+            workers: Number of workers (default: 1)
             **kwargs: Additional options (for future use)
         """
-        print(f"[AnyServe] To start the server, use the CLI:")
-        print(f"    anyserve <module>:app --host {host} --port {port}")
-        print()
+        import sys
+        import os
+        import inspect
+
+        # Find the module:app string from the call stack
+        frame = inspect.currentframe()
+        caller_frame = frame.f_back if frame else None
+        if caller_frame:
+            caller_globals = caller_frame.f_globals
+            module_name = caller_globals.get('__name__', '__main__')
+            # Find the app variable name
+            app_var_name = None
+            for name, obj in caller_globals.items():
+                if obj is self:
+                    app_var_name = name
+                    break
+            if module_name == '__main__':
+                # Get the actual module name from __file__
+                file_path = caller_globals.get('__file__', '')
+                if file_path:
+                    # Convert file path to module path
+                    rel_path = os.path.relpath(file_path, os.getcwd())
+                    module_name = rel_path.replace('/', '.').replace('\\', '.').replace('.py', '')
+            app_string = f"{module_name}:{app_var_name or 'app'}"
+        else:
+            app_string = "__main__:app"
+
+        print(f"[AnyServe] Starting server in development mode...")
+        print(f"[AnyServe] Application: {app_string}")
         print(f"[AnyServe] Registered {len(self._local_registry)} model(s):")
         for (name, version) in self._local_registry.keys():
             version_str = f" (version={version})" if version else ""
             print(f"  - {name}{version_str}")
+        print()
+
+        # Import and use CLI's AnyServeServer
+        from anyserve.cli import AnyServeServer
+        server = AnyServeServer(
+            app=app_string,
+            host=host,
+            port=port,
+            workers=workers,
+            api_server=kwargs.get('api_server'),
+            object_store=kwargs.get('object_store', '/tmp/anyserve-objects'),
+            replica_id=kwargs.get('replica_id'),
+        )
+        server.start()
 
 
 def model(name: str, version: Optional[str] = None):
