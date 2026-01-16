@@ -83,6 +83,9 @@ def main():
 
         print("      Server is ready!")
 
+        # Wait for workers to register models
+        time.sleep(2)
+
         # Run client tests
         print("\n[3/3] Running test client...")
         print("-" * 70)

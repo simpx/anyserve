@@ -19,6 +19,10 @@ from typing import List, Optional
 
 
 def main():
+    # Force unbuffered stdout for real-time log output
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(line_buffering=True)
+
     parser = argparse.ArgumentParser(
         description='AnyServe Server - KServe v2 Model Serving',
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -235,6 +239,10 @@ class AnyServeServer:
 
     def _start_workers(self):
         """启动 Python Worker 进程"""
+        # Set unbuffered output for worker subprocesses
+        env = os.environ.copy()
+        env['PYTHONUNBUFFERED'] = '1'
+
         for i in range(self.workers):
             worker_id = f"worker-{i}"
             print(f"[AnyServe] Starting Worker {i+1}/{self.workers} (id={worker_id})")
@@ -259,7 +267,8 @@ class AnyServeServer:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
-                bufsize=1
+                bufsize=1,
+                env=env
             )
             self.worker_procs.append(worker_proc)
 
