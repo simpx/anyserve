@@ -91,6 +91,28 @@ def echo_handler(request: ModelInferRequest) -> ModelInferResponse:
     return response
 ```
 
+### Client 连接模式
+
+Client 支持两种连接模式：
+
+```python
+from anyserve.worker.client import Client
+
+# Direct 模式 - 直接连接指定 Worker
+client = Client(endpoint="localhost:50051")
+
+# Discovery 模式 - 通过 API Server 自动发现 Worker
+client = Client(
+    api_server="http://localhost:8080",
+    capability={"type": "echo"}
+)
+
+result = client.infer("echo", {"text": ["hello"]})
+client.close()
+```
+
+详见 [examples/multiserver/](examples/multiserver/) 示例。
+
 ## 项目结构
 
 ```

@@ -471,6 +471,8 @@ Replica A                              Replica B
 | **Delegation** | ✅ 完成 | `api_server/router.py` |
 | **MVP Demo** | ✅ 完成 | `examples/mvp_demo/` |
 | **Test Suite** | ✅ 完成 | `tests/` (92 tests passing) |
+| **Client Discovery Mode** | ✅ 完成 | `python/anyserve/worker/client.py` |
+| **Multiserver Example** | ✅ 完成 | `examples/multiserver/` |
 
 ### 待实现
 
@@ -875,6 +877,64 @@ Response 3: text_output="!"        finish_reason="stop"  ← 最后一条
 
 ---
 
+### Phase 8：Client Discovery Mode ✅ 已完成
+
+**目标**：Client 支持通过 API Server 自动发现 Worker 端点
+
+#### 8.1 设计
+
+Client 支持两种连接模式：
+
+| 模式 | 说明 | 使用场景 |
+|------|------|----------|
+| **Direct 模式** | 直接指定 Worker 端点 | 测试、单 Worker 场景 |
+| **Discovery 模式** | 通过 API Server `/route` 接口发现端点 | 多 Worker、生产场景 |
+
+#### 8.2 API
+
+```python
+from anyserve.worker.client import Client
+
+# Direct 模式 - 直接连接指定 Worker
+client = Client(endpoint="localhost:50051")
+
+# Discovery 模式 - 通过 API Server 发现 Worker
+client = Client(
+    api_server="http://localhost:8080",
+    capability={"type": "multiply"}
+)
+
+# 推理
+result = client.infer("multiply", {"a": [1, 2], "b": [3, 4]})
+
+# 查看发现的端点
+print(client.endpoint)     # "localhost:50051"
+print(client.replica_id)   # "worker1"
+print(client.mode)         # ConnectionMode.DISCOVERY
+
+# 关闭连接
+client.close()
+```
+
+#### 8.3 参数说明
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `endpoint` | str | 直接指定 Worker 端点，与 `api_server` 互斥 |
+| `api_server` | str | API Server URL，与 `endpoint` 互斥 |
+| `capability` | dict | 路由查询条件，使用 `api_server` 时必填 |
+| `lazy_connect` | bool | 是否延迟连接，默认 `True` |
+
+#### 8.4 任务列表
+
+- [x] 添加 ConnectionMode 枚举
+- [x] 实现 _discover_endpoint() 方法
+- [x] 实现延迟连接和失败重试
+- [x] 创建 multiserver 示例
+- [x] 修复 Worker socket 冲突问题（CLI 负责注册）
+
+---
+
 ## 7. 演示场景
 
 ### 场景 1：基本路由
@@ -974,6 +1034,62 @@ curl -X POST ... -H "X-Capability-Type: heavy"
 # → 成功处理
 ```
 
+### 场景 6：Client Discovery 模式（Multiserver 示例）
+
+**架构**：
+```
+┌──────────────────┐
+│   API Server     │
+│   :8080          │
+└────────┬─────────┘
+         │
+    ┌────┴────┐
+    ↓         ↓
+┌────────┐ ┌────────┐
+│Worker 1│ │Worker 2│
+│ :50051 │ │ :50052 │
+│multiply│ │ divide │
+└────────┘ │ power  │
+           └────────┘
+```
+
+**启动服务**：
+
+```bash
+# 启动所有服务（API Server + 2 Workers）
+./examples/multiserver/run.sh
+```
+
+**使用 Discovery 模式**：
+
+```python
+from anyserve.worker.client import Client
+
+# 创建 Client，通过 capability 自动发现 Worker
+client = Client(
+    api_server="http://localhost:8080",
+    capability={"type": "multiply"}
+)
+
+# 调用推理（自动连接到 Worker 1）
+result = client.infer(
+    model_name="multiply",
+    inputs={"a": [2, 3, 4], "b": [10, 20, 30]}
+)
+print(result)  # {'product': [20, 60, 120]}
+
+# 查看发现的端点
+print(client.endpoint)     # "localhost:50051"
+print(client.replica_id)   # "worker1"
+```
+
+**测试**：
+
+```bash
+# 运行测试客户端
+python examples/multiserver/test_client.py
+```
+
 ---
 
 ## 8. 不在 MVP 范围
@@ -1006,3 +1122,4 @@ MVP 完成时，应能演示：
 6. ✅ 有清晰的使用文档和演示脚本
 7. ✅ 完整的测试套件 (92 tests passing)
 8. ✅ 流式推理正常工作
+9. ✅ Client 支持 Discovery 模式自动发现 Worker

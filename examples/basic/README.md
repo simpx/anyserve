@@ -48,3 +48,24 @@ Testing 'classifier' v1...
 
 === All tests completed ===
 ```
+
+## Client Usage
+
+The test client uses **Direct Mode** to connect to the Worker:
+
+```python
+from anyserve.worker.client import Client
+
+# Direct mode - specify Worker endpoint
+client = Client(endpoint="localhost:8000")
+
+# Inference
+result = client.infer(
+    model_name="add",
+    inputs={"a": [1, 2, 3], "b": [10, 20, 30]}
+)
+
+client.close()
+```
+
+For multi-worker scenarios with automatic endpoint discovery, see [examples/multiserver](../multiserver/).

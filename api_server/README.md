@@ -164,3 +164,64 @@ api_server/
 ├── registry.py     # Capability 注册表
 └── README.md       # 本文档
 ```
+
+## Client 集成
+
+Client 类支持 **Discovery 模式**，通过 API Server 自动发现 Worker 端点：
+
+```python
+from anyserve.worker.client import Client
+
+# Discovery 模式 - 通过 API Server 发现 Worker
+client = Client(
+    api_server="http://localhost:8080",
+    capability={"type": "chat"}
+)
+
+# 调用推理（自动发现并连接到匹配的 Worker）
+result = client.infer(
+    model_name="chat",
+    inputs={"prompt": ["Hello, world!"]}
+)
+
+# 查看发现的端点
+print(f"Endpoint: {client.endpoint}")      # "localhost:50051"
+print(f"Replica ID: {client.replica_id}")  # "replica-a"
+
+client.close()
+```
+
+### Discovery 流程
+
+```
+Client                           API Server              Worker
+  │                                  │                      │
+  │ GET /route?type=chat             │                      │
+  │ ─────────────────────────────────>                      │
+  │                                  │                      │
+  │ {"endpoint": "localhost:50051"}  │                      │
+  │ <─────────────────────────────────                      │
+  │                                  │                      │
+  │ gRPC ModelInfer                                         │
+  │ ─────────────────────────────────────────────────────────>
+  │                                  │                      │
+  │ ModelInferResponse                                      │
+  │ <─────────────────────────────────────────────────────────
+  │                                  │                      │
+```
+
+### 失败重试
+
+在 Discovery 模式下，如果推理失败，Client 会自动重新发现端点并重试：
+
+```python
+client = Client(
+    api_server="http://localhost:8080",
+    capability={"type": "chat"}
+)
+
+# retry_on_failure=True (默认) 时，失败会触发重新发现
+result = client.infer("chat", inputs, retry_on_failure=True)
+```
+
+详细使用示例请参阅 [examples/multiserver/](../examples/multiserver/)。
