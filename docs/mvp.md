@@ -10,10 +10,10 @@
 
 ### 核心目标
 
-1. **跑通完整请求链路**：Client → API Server → Dispatcher → Worker → 返回
+1. **跑通完整请求链路**：Client → API Server → Agent → Worker → 返回
 2. **验证 Capability 路由**：基于 key-value 的请求分发
 3. **验证 Worker 动态管理**：启停 Worker，切换 Capability
-4. **验证 Object System 概念**：跨 Replica 数据传递（简化实现）
+4. **验证 Object System 概念**：跨实例数据传递（简化实现）
 5. **验证 Delegation**：请求转发机制
 6. **支持流式推理**：Server Streaming 模式，支持 LLM token 流式输出
 
@@ -22,7 +22,7 @@
 | 组件 | 生产版本 | MVP 版本 |
 |------|----------|----------|
 | API Server | 独立项目，高性能 | 简单实现，演示用 |
-| **API Server 数据链路** | gRPC 代理，Client 不感知 Replica | 只做路由查询，Client 直连 Replica |
+| **API Server 数据链路** | gRPC 代理，Client 不感知实例 | 只做路由查询，Client 直连实例 |
 | 资源管理 | K8s Gang Scheduling | 用户手动运行进程 |
 | Object System | RDMA 直连，零拷贝 | 共享文件系统（目录） |
 | IPC | 零拷贝共享内存 | Unix Socket + protobuf |
@@ -43,7 +43,7 @@
 │   │                                                          │   │
 │   │   - HTTP/gRPC 入口                                       │   │
 │   │   - Capability 注册表                                    │   │
-│   │   - 根据 Capability 路由到 Replica                       │   │
+│   │   - 根据 Capability 路由到实例                           │   │
 │   │   - 流式响应 (SSE)                                       │   │
 │   │                                                          │   │
 │   │   Port: 8080                                             │   │
@@ -52,7 +52,7 @@
 │               ┌─────────────────┼─────────────────┐             │
 │               ↓                 ↓                 ↓             │
 │   ┌───────────────────┐ ┌───────────────────┐ ┌───────────────┐│
-│   │  Replica A        │ │  Replica B        │ │  Replica C    ││
+│   │  实例 A           │ │  实例 B           │ │  实例 C       ││
 │   │  (anyserve)       │ │  (anyserve)       │ │  (anyserve)   ││
 │   │                   │ │                   │ │               ││
 │   │  Port: 50051      │ │  Port: 50052      │ │  Port: 50053  ││
@@ -87,15 +87,15 @@
 
 **职责**：
 - 接收外部请求（HTTP + gRPC）
-- 维护 Capability → Replica 注册表
-- 根据请求的 Capability 路由到对应 Replica
+- 维护 Capability → 实例注册表
+- 根据请求的 Capability 路由到对应实例
 - 转发请求，返回响应
 - **流式响应转发（gRPC stream → SSE）**
 
 **接口设计**：
 
 ```python
-# 注册接口（Replica 启动时调用）
+# 注册接口（实例启动时调用）
 POST /register
 {
     "replica_id": "replica-a",
@@ -133,13 +133,13 @@ GET /registry
 
 **路由逻辑**：
 1. 从 Header 提取 Capability key-value
-2. 在注册表中查找匹配的 Replica
-3. 转发请求到 Replica
+2. 在注册表中查找匹配的实例
+3. 转发请求到实例
 4. 如果没有匹配，返回 404 或随机选一个（触发 Delegation）
 
-### 3.2 anyserve Replica
+### 3.2 anyserve 实例
 
-**已有实现**：C++ Dispatcher + Python Worker
+**已有实现**：C++ Agent + Python Worker
 
 **MVP 新增**：
 - 启动时向 API Server 注册
@@ -151,14 +151,14 @@ GET /registry
 **启动方式**（用户手动）：
 
 ```bash
-# 启动 Replica A
+# 启动实例 A
 anyserve start \
     --port 50051 \
     --api-server http://localhost:8080 \
     --app my_app:app \
     --object-store /tmp/anyserve-objects
 
-# 启动 Replica B（另一个终端）
+# 启动实例 B（另一个终端）
 anyserve start \
     --port 50052 \
     --api-server http://localhost:8080 \
@@ -175,7 +175,7 @@ anyserve start \
 - ObjRef = 文件路径字符串
 - 创建：写文件，返回路径
 - 读取：读文件
-- 跨 Replica：假设同一目录可访问（单机）或挂载共享存储（多机）
+- 跨实例：假设同一目录可访问（单机）或挂载共享存储（多机）
 
 **API**：
 
@@ -187,7 +187,7 @@ obj_ref = anyserve.objects.create(data)
 # 读取 Object
 data = anyserve.objects.get(obj_ref)
 
-# 跨 Replica 调用时传递
+# 跨实例调用时传递
 result = anyserve.call(
     capability={"type": "embed"},
     inputs={"image": obj_ref}  # 传递路径
@@ -300,15 +300,15 @@ def chat_stream_handler(request: ModelInferRequest, context, stream) -> None:
 1. 启动 API Server
    $ python api_server/main.py --port 8080
 
-2. 启动 Replica A
+2. 启动实例 A
    $ anyserve start --port 50051 --api-server http://localhost:8080 --app app_a:app
    │
-   ├── Dispatcher 启动
+   ├── Agent 启动
    ├── Worker 启动，加载 @capability handlers
    └── 向 API Server 注册: POST /register
        {replica_id, endpoint, capabilities}
 
-3. 启动 Replica B（类似）
+3. 启动实例 B（类似）
    $ anyserve start --port 50052 --api-server http://localhost:8080 --app app_b:app
 
 4. 系统就绪
@@ -327,11 +327,11 @@ Client
 API Server
   │
   ├── 提取 Capability: {type: chat, model: llama-70b}
-  ├── 查找注册表 → Replica A (localhost:50051)
-  ├── 转发请求到 Replica A
+  ├── 查找注册表 → 实例 A (localhost:50051)
+  ├── 转发请求到实例 A
   │
   ↓
-Replica A (Dispatcher)
+实例 A (Agent)
   │
   ├── 查找匹配的 Worker
   ├── 分发请求
@@ -360,11 +360,11 @@ Client
 API Server
   │
   ├── 提取 Capability: {type: chat}
-  ├── 查找注册表 → Replica A (localhost:50051)
-  ├── 调用 Replica A 的 ModelStreamInfer RPC (gRPC server streaming)
+  ├── 查找注册表 → 实例 A (localhost:50051)
+  ├── 调用实例 A 的 ModelStreamInfer RPC (gRPC server streaming)
   │
   ↓
-Replica A (Worker)
+实例 A (Worker)
   │
   ├── 执行 chat_stream_handler(request, context, stream)
   │
@@ -396,10 +396,10 @@ Client
 API Server
   │
   ├── 查找注册表 → 没有匹配
-  ├── 随机选择 Replica A
+  ├── 随机选择实例 A
   │
   ↓
-Replica A (Dispatcher)
+实例 A (Agent)
   │
   ├── 查找 Worker → 没有 heavy capability
   ├── 发起 Delegation
@@ -410,27 +410,27 @@ Replica A (Dispatcher)
   ↓
 API Server
   │
-  ├── 重新查找（排除 replica-a）→ Replica C
+  ├── 重新查找（排除 replica-a）→ 实例 C
   │
   ↓
-Replica C
+实例 C
   │
   ├── 执行请求
   │
   ↓
-← 响应返回（经 Replica A）→ Client
+← 响应返回（经实例 A）→ Client
 ```
 
 ### 4.5 Object 传递流程
 
 ```
-Replica A                              Replica B
+实例 A                                 实例 B
     │                                      │
     │ 1. 创建 Object                        │
     │    obj_ref = objects.create(data)    │
     │    → 写文件 /tmp/.../obj-xxx.bin     │
     │                                      │
-    │ 2. 调用 Replica B                     │
+    │ 2. 调用实例 B                          │
     │    anyserve.call(                    │
     │      cap={type: embed},              │
     │      inputs={data: obj_ref}          │
@@ -455,7 +455,7 @@ Replica A                              Replica B
 
 | 组件 | 状态 | 文件位置 |
 |------|------|----------|
-| C++ Dispatcher | ✅ 完成 | `cpp/server/anyserve_dispatcher.cpp` |
+| C++ Agent | ✅ 完成 | `cpp/server/anyserve_dispatcher.cpp` |
 | ModelRegistry | ✅ 完成 | `cpp/server/model_registry.cpp` |
 | WorkerClient (连接池) | ✅ 完成 | `cpp/server/worker_client.cpp` |
 | Python Worker | ✅ 完成 | `python/anyserve/worker/__main__.py` |
@@ -481,7 +481,6 @@ Replica A                              Replica B
 | 组件 | 状态 | 说明 |
 |------|------|------|
 | Worker 动态管理 | ⚠️ 部分 | ProcessSupervisor 存在但不完整 |
-| **流式接口** | ✅ 完成 | Phase 7 |
 
 ---
 
@@ -517,7 +516,7 @@ Replica A                              Replica B
 - [x] **2.2 修改 Worker 注册逻辑**
 - [ ] **2.3 修改 proto 定义** *(MVP 中跳过，Python 层直接实现)*
 - [ ] **2.4 修改 C++ ModelRegistry** *(MVP 中跳过，Python 层直接实现)*
-- [x] **2.5 Replica 向 API Server 注册**
+- [x] **2.5 实例向 API Server 注册**
 - [x] **2.6 更新示例**
 
 ---
@@ -542,8 +541,8 @@ Replica A                              Replica B
 
 **任务列表**：
 
-- [ ] **4.1 Dispatcher 检测无法处理的请求** *(MVP 中跳过，API Server 层实现)*
-- [ ] **4.2 Dispatcher 发起 Delegation** *(MVP 中跳过，API Server 层实现)*
+- [ ] **4.1 Agent 检测无法处理的请求** *(MVP 中跳过，API Server 层实现)*
+- [ ] **4.2 Agent 发起 Delegation** *(MVP 中跳过，API Server 层实现)*
 - [x] **4.3 API Server 处理 Delegation**
 - [x] **4.4 防止无限循环**
 - [x] **4.5 编写测试**
@@ -570,7 +569,7 @@ Replica A                              Replica B
 
 **任务列表**：
 
-- [x] **6.1 多 Replica 演示**
+- [x] **6.1 多实例演示**
 - [x] **6.2 Capability 路由演示**
 - [x] **6.3 Delegation 演示**
 - [x] **6.4 Object 传递演示**
@@ -1021,11 +1020,11 @@ result = context.call(
 # 终端 1：启动 API Server
 python api_server/main.py --port 8080
 
-# 终端 2：启动 Replica A（提供 chat capability）
+# 终端 2：启动实例 A（提供 chat capability）
 anyserve start --port 50051 --api-server http://localhost:8080 \
     --app examples.chat_app:app
 
-# 终端 3：启动 Replica B（提供 embed capability）
+# 终端 3：启动实例 B（提供 embed capability）
 anyserve start --port 50052 --api-server http://localhost:8080 \
     --app examples.embed_app:app
 
@@ -1033,12 +1032,12 @@ anyserve start --port 50052 --api-server http://localhost:8080 \
 curl -X POST http://localhost:8080/infer \
     -H "X-Capability-Type: chat" \
     -d '{"inputs": ...}'
-# → 路由到 Replica A
+# → 路由到实例 A
 
 curl -X POST http://localhost:8080/infer \
     -H "X-Capability-Type: embed" \
     -d '{"inputs": ...}'
-# → 路由到 Replica B
+# → 路由到实例 B
 ```
 
 ### 场景 2：Delegation
@@ -1049,9 +1048,9 @@ curl -X POST http://localhost:8080/infer \
     -H "X-Capability-Type: unknown" \
     -d '{"inputs": ...}'
 
-# API Server 随机选择 Replica A
-# Replica A 发现无法处理，发起 Delegation
-# API Server 重新路由（可能返回错误或找到其他 Replica）
+# API Server 随机选择实例 A
+# 实例 A 发现无法处理，发起 Delegation
+# API Server 重新路由（可能返回错误或找到其他实例）
 ```
 
 ### 场景 3：Object 传递
@@ -1064,7 +1063,7 @@ def chat_handler(request, context):
     embedding = compute_embedding(request.inputs["text"])
     obj_ref = context.objects.create(embedding)
 
-    # 调用 embed Replica 做进一步处理
+    # 调用 embed 实例做进一步处理
     result = context.call(
         capability={"type": "embed"},
         inputs={"embedding": obj_ref}
@@ -1079,7 +1078,7 @@ def chat_handler(request, context):
 # 终端 1：启动 API Server
 python api_server/main.py --port 8080
 
-# 终端 2：启动 Replica（提供流式 chat capability）
+# 终端 2：启动实例（提供流式 chat capability）
 anyserve start --port 50051 --api-server http://localhost:8080 \
     --app examples.stream_app:app
 
@@ -1098,11 +1097,11 @@ curl -N -X POST http://localhost:8080/infer/stream \
 ### 场景 5：Worker 动态启停
 
 ```bash
-# 初始状态：Replica A 只有 chat Worker
+# 初始状态：实例 A 只有 chat Worker
 
 # 发送 heavy 请求
 curl -X POST ... -H "X-Capability-Type: heavy"
-# → Replica A 收到，发现没有 heavy Worker
+# → 实例 A 收到，发现没有 heavy Worker
 
 # Worker Manager 决定启动 heavy Worker
 # → 动态加载 heavy_handler
@@ -1270,10 +1269,10 @@ TOP 5 MOST FREQUENT TOKENS:
 
 MVP 完成时，应能演示：
 
-1. ✅ Client 通过 API Server 访问多个 Replica
+1. ✅ Client 通过 API Server 访问多个实例
 2. ✅ 请求根据 Capability 正确路由
 3. ✅ Delegation 机制工作正常
-4. ✅ Object 可以在 Replica 之间传递
+4. ✅ Object 可以在实例之间传递
 5. ⏳ Worker 可以动态启停 *(Phase 5 待实现)*
 6. ✅ 有清晰的使用文档和演示脚本
 7. ✅ 完整的测试套件 (92 tests passing)
