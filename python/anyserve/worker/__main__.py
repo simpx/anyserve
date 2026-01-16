@@ -9,6 +9,7 @@ Worker 负责:
 4. 调用对应的模型处理函数
 5. 返回响应给 Ingress
 6. 向 API Server 注册 capabilities (MVP)
+7. 启动 gRPC server 处理流式请求 (MVP Phase 7)
 """
 
 import sys
@@ -19,10 +20,12 @@ import argparse
 import importlib
 import signal
 import httpx
+import threading
 from typing import Dict, Tuple, Callable, Optional, List, Any
+from concurrent import futures
 
 # 导入模型类型
-from anyserve.kserve import ModelInferRequest, ModelInferResponse, Context, Capability
+from anyserve.kserve import ModelInferRequest, ModelInferResponse, Context, Capability, Stream
 
 
 def main():
@@ -34,6 +37,7 @@ def main():
     parser.add_argument('--api-server', default=None, help='API Server URL (e.g., http://localhost:8080)')
     parser.add_argument('--object-store', default='/tmp/anyserve-objects', help='Object store path')
     parser.add_argument('--replica-id', default=None, help='Replica ID for registration')
+    parser.add_argument('--grpc-port', type=int, default=None, help='gRPC port for streaming (default: ingress_port + 100)')
 
     args = parser.parse_args()
 
@@ -41,6 +45,10 @@ def main():
     module_path, app_name = args.app.split(":")
     module = importlib.import_module(module_path)
     app = getattr(module, app_name)
+
+    # Determine gRPC port for streaming
+    ingress_port = int(args.ingress.split(":")[1])
+    grpc_port = args.grpc_port or (ingress_port + 100)
 
     # 2. 创建 Worker
     worker = Worker(
@@ -51,6 +59,7 @@ def main():
         api_server=args.api_server,
         object_store_path=args.object_store,
         replica_id=args.replica_id or args.worker_id,
+        grpc_port=grpc_port,
     )
 
     # 3. 向 Ingress 注册
@@ -60,7 +69,7 @@ def main():
     if args.api_server:
         worker.register_to_api_server()
 
-    # 5. 启动 Unix Socket 服务器
+    # 5. 启动 gRPC server (for streaming) 和 Unix Socket 服务器
     worker.serve()
 
 
@@ -76,12 +85,14 @@ class Worker:
         api_server: str = None,
         object_store_path: str = '/tmp/anyserve-objects',
         replica_id: str = None,
+        grpc_port: int = None,
     ):
         self.app = app
         self.worker_id = worker_id
         self.ingress_address = ingress_address
         self.api_server = api_server
         self.replica_id = replica_id or worker_id
+        self.grpc_port = grpc_port
 
         # Unix Socket 路径
         if worker_port:
@@ -90,6 +101,7 @@ class Worker:
             self.socket_path = f"/tmp/anyserve-worker-{worker_id}.sock"
 
         self.running = True
+        self.grpc_server = None
 
         # Initialize ObjectStore
         from anyserve.objects import ObjectStore
@@ -118,7 +130,7 @@ class Worker:
 
         # 从 capability handlers 收集
         if hasattr(self.app, '_capability_handlers'):
-            for cap, handler, uses_context in self.app._capability_handlers:
+            for cap, handler, uses_context, is_stream in self.app._capability_handlers:
                 capabilities.append(cap.to_dict())
 
         # 从 legacy model registry 收集 (转换为 capability 格式)
@@ -241,7 +253,11 @@ class Worker:
             # 不抛出异常，允许 Worker 继续运行
 
     def serve(self):
-        """启动 Unix Socket 服务器"""
+        """启动 gRPC server 和 Unix Socket 服务器"""
+        # 启动 gRPC server (for streaming) 在后台线程
+        if self.grpc_port:
+            self._start_grpc_server()
+
         # 删除旧 socket 文件
         if os.path.exists(self.socket_path):
             os.remove(self.socket_path)
@@ -270,7 +286,40 @@ class Worker:
             sock.close()
             if os.path.exists(self.socket_path):
                 os.remove(self.socket_path)
+            self._stop_grpc_server()
             print(f"[Worker-{self.worker_id}] Stopped")
+
+    def _start_grpc_server(self):
+        """启动 gRPC server 处理流式请求"""
+        try:
+            import grpc
+            from anyserve._proto import grpc_predict_v2_pb2_grpc, grpc_predict_v2_pb2
+
+            # Create gRPC server
+            self.grpc_server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+
+            # Add servicer
+            servicer = StreamingServicer(self)
+            grpc_predict_v2_pb2_grpc.add_GRPCInferenceServiceServicer_to_server(
+                servicer, self.grpc_server
+            )
+
+            # Bind to port
+            self.grpc_server.add_insecure_port(f'[::]:{self.grpc_port}')
+            self.grpc_server.start()
+
+            print(f"[Worker-{self.worker_id}] gRPC streaming server started on port {self.grpc_port}")
+
+        except Exception as e:
+            print(f"[Worker-{self.worker_id}] Failed to start gRPC server: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _stop_grpc_server(self):
+        """停止 gRPC server"""
+        if self.grpc_server:
+            self.grpc_server.stop(grace=5)
+            print(f"[Worker-{self.worker_id}] gRPC server stopped")
 
     def handle_connection(self, conn: socket.socket):
         """处理单个连接"""
@@ -433,6 +482,122 @@ class Worker:
                 outputs=[],
                 error=error_msg
             )
+
+    def dispatch_stream_request(self, request, grpc_context):
+        """分发流式请求到对应的流式处理函数"""
+        from anyserve._proto import grpc_predict_v2_pb2
+
+        model_name = request.model_name
+        model_version = request.model_version
+
+        # 查找流式 handler
+        if not hasattr(self.app, 'find_stream_handler'):
+            yield grpc_predict_v2_pb2.ModelStreamInferResponse(
+                error_message=f"Streaming not supported"
+            )
+            return
+
+        capability_query = {"type": model_name}
+        if model_version:
+            capability_query["model"] = model_version
+
+        result = self.app.find_stream_handler(capability_query)
+        if not result:
+            yield grpc_predict_v2_pb2.ModelStreamInferResponse(
+                error_message=f"No streaming handler for capability: {capability_query}"
+            )
+            return
+
+        handler, uses_context, matched_capability = result
+
+        # 创建 Stream 对象
+        stream = Stream()
+
+        # 创建 Context
+        context = self._create_context(matched_capability)
+
+        # 在后台线程中运行 handler
+        def run_handler():
+            try:
+                handler(request, context, stream)
+            except Exception as e:
+                import traceback
+                error_msg = f"Error in stream handler: {str(e)}\n{traceback.format_exc()}"
+                print(f"[Worker-{self.worker_id}] {error_msg}")
+                stream.error(error_msg)
+            finally:
+                if not stream._closed:
+                    stream.close()
+
+        handler_thread = threading.Thread(target=run_handler)
+        handler_thread.start()
+
+        # 从 Stream 中读取响应并 yield
+        for response in stream.iter_responses():
+            if isinstance(response, dict) and "error_message" in response:
+                yield grpc_predict_v2_pb2.ModelStreamInferResponse(
+                    error_message=response["error_message"]
+                )
+            else:
+                # response 应该是 ModelStreamInferResponse proto
+                yield response
+
+        handler_thread.join(timeout=5.0)
+
+
+class StreamingServicer:
+    """gRPC servicer 用于处理流式请求"""
+
+    def __init__(self, worker: Worker):
+        self.worker = worker
+
+    def ModelStreamInfer(self, request, context):
+        """处理流式推理请求"""
+        yield from self.worker.dispatch_stream_request(request, context)
+
+    # 实现其他必需的 RPC 方法（转发到非流式处理）
+    def ServerLive(self, request, context):
+        from anyserve._proto import grpc_predict_v2_pb2
+        return grpc_predict_v2_pb2.ServerLiveResponse(live=True)
+
+    def ServerReady(self, request, context):
+        from anyserve._proto import grpc_predict_v2_pb2
+        return grpc_predict_v2_pb2.ServerReadyResponse(ready=True)
+
+    def ModelReady(self, request, context):
+        from anyserve._proto import grpc_predict_v2_pb2
+        return grpc_predict_v2_pb2.ModelReadyResponse(ready=True)
+
+    def ServerMetadata(self, request, context):
+        from anyserve._proto import grpc_predict_v2_pb2
+        return grpc_predict_v2_pb2.ServerMetadataResponse(
+            name="anyserve",
+            version="0.1.0",
+        )
+
+    def ModelMetadata(self, request, context):
+        from anyserve._proto import grpc_predict_v2_pb2
+        return grpc_predict_v2_pb2.ModelMetadataResponse(
+            name=request.name,
+        )
+
+    def ModelInfer(self, request, context):
+        """处理非流式推理请求（转发到 Worker）"""
+        from anyserve.kserve import _proto_to_python_request, _python_to_proto_response
+        from anyserve._proto import grpc_predict_v2_pb2
+
+        # 转换 proto request 到 Python request
+        py_request = _proto_to_python_request(request.SerializeToString())
+
+        # 调用 dispatch
+        py_response = self.worker.dispatch_request(py_request)
+
+        # 转换回 proto response
+        response_bytes = _python_to_proto_response(py_response)
+        response = grpc_predict_v2_pb2.ModelInferResponse()
+        response.ParseFromString(response_bytes)
+
+        return response
 
 
 if __name__ == "__main__":

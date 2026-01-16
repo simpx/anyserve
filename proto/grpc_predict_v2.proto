@@ -9,6 +9,8 @@ service GRPCInferenceService {
   rpc ServerMetadata(ServerMetadataRequest) returns (ServerMetadataResponse) {}
   rpc ModelMetadata(ModelMetadataRequest) returns (ModelMetadataResponse) {}
   rpc ModelInfer(ModelInferRequest) returns (ModelInferResponse) {}
+  // Server streaming RPC for LLM token streaming
+  rpc ModelStreamInfer(ModelInferRequest) returns (stream ModelStreamInferResponse) {}
 }
 
 message ServerLiveRequest {}
@@ -96,4 +98,12 @@ message ModelMetadataResponse {
   string platform = 3;
   repeated ModelInferRequest.InferInputTensor inputs = 4;
   repeated ModelInferResponse.InferOutputTensor outputs = 5;
+}
+
+// Streaming inference response
+message ModelStreamInferResponse {
+  // Error message, empty string means success
+  string error_message = 1;
+  // The actual inference response containing outputs for this chunk
+  ModelInferResponse infer_response = 2;
 }

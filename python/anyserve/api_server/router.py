@@ -5,12 +5,13 @@ This module provides the FastAPI application that routes
 requests to the appropriate Replica based on Capability headers.
 """
 
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, AsyncGenerator
 import grpc
 import httpx
+import json
 
 from fastapi import FastAPI, Request, Response, HTTPException, Header
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from .registry import CapabilityRegistry, ReplicaInfo, Capability
@@ -310,6 +311,83 @@ def create_app(registry: Optional[CapabilityRegistry] = None) -> FastAPI:
                 detail=f"Failed to forward to Replica {replica.replica_id}: {str(e)}"
             )
 
+    @app.post("/infer/stream")
+    async def infer_stream(
+        request: Request,
+        x_capability_type: Optional[str] = Header(None, alias="X-Capability-Type"),
+        x_capability_model: Optional[str] = Header(None, alias="X-Capability-Model"),
+        x_delegated_from: Optional[str] = Header(None, alias="X-Delegated-From"),
+        x_delegation_depth: Optional[int] = Header(0, alias="X-Delegation-Depth"),
+    ):
+        """
+        Streaming inference endpoint (Server-Sent Events).
+
+        Returns SSE stream with streaming inference responses.
+        """
+        registry = app.state.registry
+
+        # Build capability query from headers
+        capability_query = {}
+        if x_capability_type:
+            capability_query["type"] = x_capability_type
+        if x_capability_model:
+            capability_query["model"] = x_capability_model
+
+        if not capability_query:
+            raise HTTPException(
+                status_code=400,
+                detail="No capability headers provided. Use X-Capability-Type, X-Capability-Model, etc."
+            )
+
+        # Build exclude list from delegation
+        exclude = []
+        if x_delegated_from:
+            exclude.append(x_delegated_from)
+
+        # Lookup replica
+        replica = registry.lookup(capability_query, exclude=exclude)
+
+        if replica is None:
+            if x_delegation_depth == 0:
+                replica = registry.get_random_replica(exclude=exclude)
+                if replica is None:
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"No Replica found for capability: {capability_query}"
+                    )
+            else:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"No Replica found for capability (after delegation): {capability_query}"
+                )
+
+        # Read JSON body
+        try:
+            json_body = await request.json()
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid JSON: {str(e)}")
+
+        # Create SSE event generator
+        async def event_generator() -> AsyncGenerator[str, None]:
+            try:
+                async for event_data in forward_to_replica_grpc_stream(
+                    replica.endpoint,
+                    json_body,
+                    capability_query,
+                ):
+                    yield f"data: {json.dumps(event_data)}\n\n"
+            except Exception as e:
+                yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+            }
+        )
+
     return app
 
 
@@ -447,5 +525,110 @@ async def forward_to_replica_grpc_json(
             result["outputs"].append(output_data)
 
         return result
+    finally:
+        await channel.close()
+
+
+async def forward_to_replica_grpc_stream(
+    endpoint: str,
+    json_data: Dict[str, Any],
+    capability_query: Dict[str, Any],
+) -> AsyncGenerator[Dict[str, Any], None]:
+    """
+    Forward a streaming request to a Replica via gRPC.
+
+    Args:
+        endpoint: Replica gRPC endpoint (Note: for streaming, we use port + 100)
+        json_data: JSON request data
+        capability_query: Capability query for the request
+
+    Yields:
+        JSON response data for each streamed chunk
+    """
+    import sys
+    import os
+
+    # Add proto path
+    proto_path = os.path.join(os.path.dirname(__file__), '..', '_proto')
+    if proto_path not in sys.path:
+        sys.path.insert(0, proto_path)
+
+    from anyserve._proto import grpc_predict_v2_pb2
+    from anyserve._proto import grpc_predict_v2_pb2_grpc
+
+    # Calculate streaming endpoint (port + 100)
+    # endpoint is like "localhost:9000", streaming is "localhost:9100"
+    host, port = endpoint.rsplit(":", 1)
+    stream_port = int(port) + 100
+    stream_endpoint = f"{host}:{stream_port}"
+
+    # Create gRPC channel
+    channel = grpc.aio.insecure_channel(stream_endpoint)
+    stub = grpc_predict_v2_pb2_grpc.GRPCInferenceServiceStub(channel)
+
+    try:
+        # Build request from JSON
+        request = grpc_predict_v2_pb2.ModelInferRequest()
+        request.model_name = json_data.get("model_name", capability_query.get("type", "unknown"))
+        request.model_version = json_data.get("model_version", "")
+        request.id = json_data.get("id", "")
+
+        # Add inputs
+        for input_data in json_data.get("inputs", []):
+            input_tensor = request.inputs.add()
+            input_tensor.name = input_data.get("name", "input")
+            input_tensor.datatype = input_data.get("datatype", "BYTES")
+            input_tensor.shape.extend(input_data.get("shape", [1]))
+
+            # Handle different content types
+            contents = input_data.get("contents", {})
+            if "bytes_contents" in contents:
+                for b in contents["bytes_contents"]:
+                    if isinstance(b, str):
+                        input_tensor.contents.bytes_contents.append(b.encode())
+                    else:
+                        input_tensor.contents.bytes_contents.append(b)
+            if "int_contents" in contents:
+                input_tensor.contents.int_contents.extend(contents["int_contents"])
+            if "fp32_contents" in contents:
+                input_tensor.contents.fp32_contents.extend(contents["fp32_contents"])
+
+        # Make streaming gRPC call
+        async for response in stub.ModelStreamInfer(request):
+            # Check for error
+            if response.error_message:
+                yield {"error": response.error_message}
+                continue
+
+            # Convert response to JSON
+            infer_resp = response.infer_response
+            result = {
+                "model_name": infer_resp.model_name,
+                "model_version": infer_resp.model_version,
+                "id": infer_resp.id,
+                "outputs": []
+            }
+
+            for output in infer_resp.outputs:
+                output_data = {
+                    "name": output.name,
+                    "datatype": output.datatype,
+                    "shape": list(output.shape),
+                    "contents": {}
+                }
+                if output.contents.bytes_contents:
+                    output_data["contents"]["bytes_contents"] = [
+                        b.decode('utf-8', errors='replace')
+                        for b in output.contents.bytes_contents
+                    ]
+                if output.contents.int_contents:
+                    output_data["contents"]["int_contents"] = list(output.contents.int_contents)
+                if output.contents.fp32_contents:
+                    output_data["contents"]["fp32_contents"] = list(output.contents.fp32_contents)
+
+                result["outputs"].append(output_data)
+
+            yield result
+
     finally:
         await channel.close()

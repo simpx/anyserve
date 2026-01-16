@@ -9,8 +9,10 @@ Supports both:
 - @app.capability(type="chat", model="llama-70b") - capability-based routing
 """
 
-from typing import List, Optional, Callable, Dict, Any as PyAny, Union
+from typing import List, Optional, Callable, Dict, Any as PyAny, Union, Generator
 from dataclasses import dataclass, field
+import queue
+import threading
 
 # Import Capability from the canonical location
 from anyserve.api_server.registry import Capability
@@ -252,6 +254,78 @@ class Context:
 
 
 # =============================================================================
+# Stream Support for Streaming Inference
+# =============================================================================
+
+class Stream:
+    """
+    Stream object for sending streaming responses.
+
+    Used with @app.capability(stream=True) handlers to send
+    multiple responses back to the client.
+
+    Usage:
+        @app.capability(type="chat", stream=True)
+        def stream_handler(request, context, stream):
+            for token in generate_tokens():
+                stream.send(ModelStreamInferResponse(
+                    infer_response=ModelInferResponse(...)
+                ))
+    """
+
+    def __init__(self):
+        self._queue: queue.Queue = queue.Queue()
+        self._closed = False
+        self._error: Optional[str] = None
+
+    def send(self, response) -> None:
+        """
+        Send a streaming response.
+
+        Args:
+            response: ModelStreamInferResponse (proto) or dict
+        """
+        if self._closed:
+            raise RuntimeError("Cannot send to a closed stream")
+        self._queue.put(response)
+
+    def error(self, message: str) -> None:
+        """
+        Send an error response and close the stream.
+
+        Args:
+            message: Error message
+        """
+        self._error = message
+        self._queue.put({"error_message": message})
+        self.close()
+
+    def close(self) -> None:
+        """Close the stream."""
+        self._closed = True
+        self._queue.put(None)  # Sentinel value
+
+    def __iter__(self):
+        """Iterate over stream responses."""
+        return self
+
+    def __next__(self):
+        """Get next response from the stream."""
+        item = self._queue.get()
+        if item is None:
+            raise StopIteration
+        return item
+
+    def iter_responses(self) -> Generator:
+        """Generator that yields responses until stream is closed."""
+        while True:
+            item = self._queue.get()
+            if item is None:
+                break
+            yield item
+
+
+# =============================================================================
 # Model Registry and Decorator
 # =============================================================================
 
@@ -328,7 +402,7 @@ class AnyServe:
             return func
         return decorator
 
-    def capability(self, **capability_attrs):
+    def capability(self, stream: bool = False, **capability_attrs):
         """
         Decorator to register a capability handler.
 
@@ -336,10 +410,11 @@ class AnyServe:
         The handler receives both request and context.
 
         Args:
+            stream: If True, this is a streaming handler that receives a Stream object
             **capability_attrs: Key-value pairs defining the capability
                                (e.g., type="chat", model="llama-70b")
 
-        Usage:
+        Usage (non-streaming):
             @app.capability(type="chat", model="llama-70b")
             def chat_handler(request: ModelInferRequest, context: Context) -> ModelInferResponse:
                 # Access ObjectStore
@@ -353,9 +428,11 @@ class AnyServe:
 
                 return response
 
-            @app.capability(type="embed")
-            def embed_handler(request, context):
-                ...
+        Usage (streaming):
+            @app.capability(type="chat", stream=True)
+            def stream_handler(request: ModelInferRequest, context: Context, stream: Stream) -> None:
+                for token in generate_tokens():
+                    stream.send(ModelStreamInferResponse(...))
         """
         import inspect
 
@@ -367,8 +444,8 @@ class AnyServe:
             params = list(sig.parameters.keys())
             uses_context = len(params) >= 2
 
-            # Register the handler
-            self._capability_handlers.append((cap, func, uses_context))
+            # Register the handler with stream flag
+            self._capability_handlers.append((cap, func, uses_context, stream))
 
             # Also register in legacy model registry for backward compatibility
             # Use type as model_name if available
@@ -378,26 +455,51 @@ class AnyServe:
             self._local_registry[key] = func
             _model_registry[key] = func
 
+            stream_str = " (streaming)" if stream else ""
             cap_str = ", ".join(f"{k}={v!r}" for k, v in capability_attrs.items())
-            print(f"[AnyServe] Registered capability handler: {cap_str}")
+            print(f"[AnyServe] Registered capability handler: {cap_str}{stream_str}")
             return func
 
         return decorator
 
     def get_capabilities(self) -> List[Dict[str, PyAny]]:
         """Get list of all registered capabilities as dicts."""
-        return [cap.to_dict() for cap, _, _ in self._capability_handlers]
+        return [cap.to_dict() for cap, _, _, _ in self._capability_handlers]
 
     def find_handler(self, capability_query: Dict[str, PyAny]) -> Optional[tuple]:
         """
-        Find a handler that matches the capability query.
+        Find a non-streaming handler that matches the capability query.
 
         Returns:
-            Tuple of (handler_func, uses_context) if found, None otherwise
+            Tuple of (handler_func, uses_context, capability) if found, None otherwise
         """
-        for cap, handler, uses_context in self._capability_handlers:
-            if cap.matches(capability_query):
+        for cap, handler, uses_context, is_stream in self._capability_handlers:
+            if not is_stream and cap.matches(capability_query):
                 return (handler, uses_context, cap)
+        return None
+
+    def find_stream_handler(self, capability_query: Dict[str, PyAny]) -> Optional[tuple]:
+        """
+        Find a streaming handler that matches the capability query.
+
+        Returns:
+            Tuple of (handler_func, uses_context, capability) if found, None otherwise
+        """
+        for cap, handler, uses_context, is_stream in self._capability_handlers:
+            if is_stream and cap.matches(capability_query):
+                return (handler, uses_context, cap)
+        return None
+
+    def find_any_handler(self, capability_query: Dict[str, PyAny]) -> Optional[tuple]:
+        """
+        Find any handler (streaming or non-streaming) that matches the capability query.
+
+        Returns:
+            Tuple of (handler_func, uses_context, capability, is_stream) if found, None otherwise
+        """
+        for cap, handler, uses_context, is_stream in self._capability_handlers:
+            if cap.matches(capability_query):
+                return (handler, uses_context, cap, is_stream)
         return None
 
     def run(self, host: str = "0.0.0.0", port: int = 8000, **kwargs):
