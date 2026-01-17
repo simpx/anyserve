@@ -1,6 +1,6 @@
 [project]
 name = "anyserve"
-version = "0.1.1"
+version = "0.1.2"
 description = "anyServe - Capability-Oriented Serving Runtime for LLM inference"
 authors = [
     { name = "simpx", email = "simpxx@gmail.com" }

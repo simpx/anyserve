@@ -21,15 +21,18 @@ build:
         --grpc_python_out=python/anyserve/_proto \
         proto/grpc_predict_v2.proto proto/worker_management.proto
     touch python/anyserve/_proto/__init__.py
+    # Fix imports in _proto/
+    sed -i '' 's/^import grpc_predict_v2_pb2/from . import grpc_predict_v2_pb2/' python/anyserve/_proto/grpc_predict_v2_pb2_grpc.py
+    sed -i '' 's/^import worker_management_pb2/from . import worker_management_pb2/' python/anyserve/_proto/worker_management_pb2_grpc.py
     # Also generate for worker.client module
     uv run python -m grpc_tools.protoc -I proto \
         --python_out=python/anyserve/worker/proto \
         --grpc_python_out=python/anyserve/worker/proto \
         proto/grpc_predict_v2.proto proto/worker_management.proto
-    # Fix imports in generated grpc files
+    touch python/anyserve/worker/proto/__init__.py
+    # Fix imports in worker/proto/
     sed -i '' 's/^import grpc_predict_v2_pb2/from . import grpc_predict_v2_pb2/' python/anyserve/worker/proto/grpc_predict_v2_pb2_grpc.py
     sed -i '' 's/^import worker_management_pb2/from . import worker_management_pb2/' python/anyserve/worker/proto/worker_management_pb2_grpc.py
-    touch python/anyserve/worker/proto/__init__.py
     # Build C++ Agent
     cd cpp/build
     rm -f CMakeCache.txt
@@ -87,13 +90,18 @@ wheel python="":
         --grpc_python_out=python/anyserve/_proto \
         proto/grpc_predict_v2.proto proto/worker_management.proto
     touch python/anyserve/_proto/__init__.py
+    # Fix imports in _proto/
+    sed -i '' 's/^import grpc_predict_v2_pb2/from . import grpc_predict_v2_pb2/' python/anyserve/_proto/grpc_predict_v2_pb2_grpc.py
+    sed -i '' 's/^import worker_management_pb2/from . import worker_management_pb2/' python/anyserve/_proto/worker_management_pb2_grpc.py
+    # Generate for worker/proto
     uv run python -m grpc_tools.protoc -I proto \
         --python_out=python/anyserve/worker/proto \
         --grpc_python_out=python/anyserve/worker/proto \
         proto/grpc_predict_v2.proto proto/worker_management.proto
+    touch python/anyserve/worker/proto/__init__.py
+    # Fix imports in worker/proto/
     sed -i '' 's/^import grpc_predict_v2_pb2/from . import grpc_predict_v2_pb2/' python/anyserve/worker/proto/grpc_predict_v2_pb2_grpc.py
     sed -i '' 's/^import worker_management_pb2/from . import worker_management_pb2/' python/anyserve/worker/proto/worker_management_pb2_grpc.py
-    touch python/anyserve/worker/proto/__init__.py
     # Ensure conan deps exist
     if [ ! -f "cpp/build/conan_toolchain.cmake" ]; then
         echo "Installing Conan dependencies..."
