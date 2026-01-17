@@ -1,6 +1,6 @@
 [project]
 name = "anyserve"
-version = "0.1.0"
+version = "0.1.1"
 description = "anyServe - Capability-Oriented Serving Runtime for LLM inference"
 authors = [
     { name = "simpx", email = "simpxx@gmail.com" }
@@ -45,6 +45,11 @@ cmake.args = [
     "-DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake"
 ]
 wheel.packages = ["python/anyserve"]
+# Include generated proto files (excluded by .gitignore)
+sdist.include = [
+    "python/anyserve/_proto/*.py",
+    "python/anyserve/worker/proto/*.py",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
