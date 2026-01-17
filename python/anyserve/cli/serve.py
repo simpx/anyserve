@@ -25,7 +25,9 @@ import click
 @click.option("--host", type=str, default="0.0.0.0", help="Server host")
 @click.option("--workers", type=int, default=1, help="Number of workers")
 @click.option("--config", type=click.Path(exists=True), help="Config file path")
-def serve_command(model_path, name, n_ctx, n_gpu_layers, n_batch, n_threads, port, host, workers, config):
+@click.option("--openai-port", type=int, default=None, help="OpenAI API port (disabled if not set)")
+@click.option("--openai-host", type=str, default="0.0.0.0", help="OpenAI server host")
+def serve_command(model_path, name, n_ctx, n_gpu_layers, n_batch, n_threads, port, host, workers, config, openai_port, openai_host):
     """Start anyserve with a llama.cpp model.
 
     This command runs a llama.cpp model using the AnyServe worker framework,
@@ -34,8 +36,8 @@ def serve_command(model_path, name, n_ctx, n_gpu_layers, n_batch, n_threads, por
     Example:
         anyserve serve /models/llama-7b.gguf --name llama-7b --port 8000
 
-    To access via OpenAI-compatible API, also run the openai_server:
-        python -m openai_server --anyserve-endpoint localhost:8000 --port 8080
+        # With embedded OpenAI-compatible API server
+        anyserve serve /models/llama-7b.gguf --port 8000 --openai-port 8080
     """
     from anyserve.builtins.llamacpp import LlamaCppConfig
 
@@ -50,6 +52,8 @@ def serve_command(model_path, name, n_ctx, n_gpu_layers, n_batch, n_threads, por
         n_threads = cfg.n_threads
         port = cfg.port
         host = cfg.host
+        openai_port = openai_port or cfg.openai_port
+        openai_host = openai_host or cfg.openai_host
     else:
         if not model_path:
             raise click.UsageError("Either model_path or --config is required")
@@ -66,8 +70,10 @@ def serve_command(model_path, name, n_ctx, n_gpu_layers, n_batch, n_threads, por
     click.echo(f"  Model name: {model_name}")
     click.echo(f"  Context size: {n_ctx}")
     click.echo(f"  GPU layers: {n_gpu_layers}")
-    click.echo(f"  Host: {host}:{port}")
+    click.echo(f"  KServe: {host}:{port}")
     click.echo(f"  Workers: {workers}")
+    if openai_port:
+        click.echo(f"  OpenAI API: {openai_host}:{openai_port}")
     click.echo()
 
     # 设置环境变量（供 factory 读取）
@@ -78,6 +84,14 @@ def serve_command(model_path, name, n_ctx, n_gpu_layers, n_batch, n_threads, por
     os.environ["ANYSERVE_LLAMACPP_N_BATCH"] = str(n_batch)
     if n_threads:
         os.environ["ANYSERVE_LLAMACPP_N_THREADS"] = str(n_threads)
+
+    # OpenAI server environment variables
+    if openai_port:
+        os.environ["ANYSERVE_LLAMACPP_OPENAI_PORT"] = str(openai_port)
+        os.environ["ANYSERVE_LLAMACPP_OPENAI_HOST"] = openai_host
+        # Use worker's gRPC port (ingress_port + 100) for streaming support
+        grpc_port = port + 100
+        os.environ["ANYSERVE_LLAMACPP_KSERVE_ENDPOINT"] = f"localhost:{grpc_port}"
 
     # Use the standard AnyServe server with factory mode
     from .run import AnyServeServer

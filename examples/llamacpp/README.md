@@ -1,6 +1,6 @@
 # LlamaCpp Serve Example
 
-This example shows how to serve a GGUF model using `anyserve serve` with the native KServe gRPC protocol, and optionally use the OpenAI-compatible API server for REST access.
+This example shows how to serve a GGUF model using `anyserve serve` with the native KServe gRPC protocol and embedded OpenAI-compatible API server.
 
 ## Architecture
 
@@ -9,14 +9,7 @@ This example shows how to serve a GGUF model using `anyserve serve` with the nat
 │                     OpenAI Clients                          │
 │              (curl, Python openai lib, etc.)                │
 └─────────────────────────────────────────────────────────────┘
-                              │ HTTP/REST
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    openai_server                            │
-│           (OpenAI → KServe protocol converter)              │
-│                    Port 8080 (optional)                     │
-└─────────────────────────────────────────────────────────────┘
-                              │ gRPC (KServe v2)
+                              │ HTTP/REST (Port 8080)
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                      AnyServe                               │
@@ -26,6 +19,10 @@ This example shows how to serve a GGUF model using `anyserve serve` with the nat
 │                          │ Unix Socket                      │
 │   ┌─────────────────────────────────────────────────────┐   │
 │   │              Python Worker                          │   │
+│   │   ┌─────────────────────────────────────────────┐   │   │
+│   │   │  Embedded OpenAI Server (HTTP :8080)        │   │   │
+│   │   │  (OpenAI → KServe protocol converter)       │   │   │
+│   │   └─────────────────────────────────────────────┘   │   │
 │   │   @app.capability(type="generate")                  │   │
 │   │   @app.capability(type="generate_stream")           │   │
 │   │              LlamaCppEngine                         │   │
@@ -55,7 +52,7 @@ wget https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/
 The easiest way to run the example is using the provided scripts:
 
 ```bash
-# Terminal 1: Start both AnyServe and OpenAI server
+# Terminal 1: Start AnyServe with embedded OpenAI server
 export ANYSERVE_MODEL_PATH=/path/to/your/model.gguf
 ./examples/llamacpp/run_server.sh
 
@@ -72,10 +69,9 @@ Environment variables for `run_server.sh`:
 
 ### Manual Setup
 
-#### 1. Start AnyServe with the model (KServe gRPC)
-
 ```bash
-anyserve serve /path/to/model.gguf --name my-model --port 8000
+# Start AnyServe with embedded OpenAI server
+anyserve serve /path/to/model.gguf --name my-model --port 8000 --openai-port 8080
 
 # Or with more options
 anyserve serve /path/to/model.gguf \
@@ -83,29 +79,16 @@ anyserve serve /path/to/model.gguf \
     --n-ctx 2048 \
     --n-gpu-layers -1 \
     --port 8000 \
-    --workers 1
+    --openai-port 8080
 ```
 
-This exposes the model via gRPC on port 8000 using the KServe v2 inference protocol.
-
-#### 2. (Optional) Start OpenAI-compatible API server
-
-```bash
-python -m openai_server --anyserve-endpoint localhost:8000 --port 8080
-```
-
-This provides an OpenAI-compatible REST API on port 8080.
+This exposes:
+- KServe gRPC on port 8000
+- OpenAI-compatible REST API on port 8080
 
 ## API Usage
 
-### Direct gRPC (KServe v2 protocol)
-
-Use any KServe v2 compatible client. The model exposes these capabilities:
-- `type="generate"` - Non-streaming text generation
-- `type="generate_stream"` - Streaming text generation
-- `type="model_info"` - Get model information
-
-### OpenAI-compatible REST API (via openai_server)
+### OpenAI-compatible REST API
 
 #### List Models
 ```bash
@@ -146,6 +129,13 @@ curl -X POST http://localhost:8080/v1/chat/completions \
     }'
 ```
 
+### Direct gRPC (KServe v2 protocol)
+
+Use any KServe v2 compatible client. The model exposes these capabilities:
+- `type="generate"` - Non-streaming text generation
+- `type="generate_stream"` - Streaming text generation
+- `type="model_info"` - Get model information
+
 ## Configuration File
 
 You can also use a YAML configuration file:
@@ -157,6 +147,7 @@ name: tinyllama
 n_ctx: 4096
 n_gpu_layers: -1
 port: 8000
+openai_port: 8080
 
 # Generation defaults
 max_tokens: 256
@@ -199,7 +190,7 @@ anyserve serve --config model.yaml
 ## Python Client Example
 
 ```python
-# Using OpenAI library with openai_server
+# Using OpenAI library
 import openai
 
 openai.api_base = "http://localhost:8080/v1"
@@ -222,6 +213,8 @@ For advanced use cases, you can use the factory mode with environment variables:
 export ANYSERVE_LLAMACPP_MODEL_PATH=/path/to/model.gguf
 export ANYSERVE_LLAMACPP_NAME=my-model
 export ANYSERVE_LLAMACPP_N_CTX=2048
+export ANYSERVE_LLAMACPP_OPENAI_PORT=8080
+export ANYSERVE_LLAMACPP_KSERVE_ENDPOINT=localhost:8100
 
 # Run with factory mode
 anyserve run anyserve.builtins.llamacpp:create_app --factory --port 8000

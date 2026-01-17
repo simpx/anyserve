@@ -53,12 +53,16 @@ anyserve serve /models/llama-7b-chat.gguf
 # 指定模型名称 (用于 API 调用时的 model_name)
 anyserve serve /models/llama-7b-chat.gguf --name llama-7b
 
+# 同时启用嵌入式 OpenAI 兼容 API
+anyserve serve /models/llama-7b-chat.gguf --name llama-7b --openai-port 8080
+
 # 完整参数示例
 anyserve serve /models/llama-7b-chat.gguf \
     --name llama-7b \
     --n-ctx 4096 \
     --n-gpu-layers 35 \
-    --port 8000
+    --port 8000 \
+    --openai-port 8080
 
 # 使用配置文件
 anyserve serve --config /etc/anyserve/model.yaml
@@ -74,7 +78,9 @@ anyserve serve --config /etc/anyserve/model.yaml
 | `--n-gpu-layers` | int | -1 | GPU 层数,-1 表示全部 |
 | `--n-batch` | int | 512 | 批处理大小 |
 | `--n-threads` | int | auto | CPU 线程数 |
-| `--port` | int | 8000 | 服务端口 |
+| `--port` | int | 8000 | KServe gRPC 端口 |
+| `--openai-port` | int | - | OpenAI 兼容 API 端口 (不设置则禁用) |
+| `--openai-host` | str | 0.0.0.0 | OpenAI 服务绑定地址 |
 | `--config` | str | - | YAML 配置文件路径 |
 
 ### 配置文件格式
@@ -99,6 +105,8 @@ repeat_penalty: 1.1
 
 # 服务参数
 port: 8000
+openai_port: 8080  # OpenAI 兼容 API 端口 (可选)
+openai_host: 0.0.0.0
 ```
 
 ## 实现
@@ -113,10 +121,15 @@ python/anyserve/
 │   └── serve.py             # serve 子命令实现
 ├── builtins/
 │   └── llamacpp/
-│       ├── __init__.py
+│       ├── __init__.py      # Factory 函数
 │       ├── config.py        # 配置类定义
 │       ├── engine.py        # llama.cpp 引擎封装
-│       └── handlers.py      # 请求处理器
+│       ├── app.py           # AnyServe 应用和 capability handlers
+│       ├── openai_server.py # 嵌入式 OpenAI 服务启动器
+│       └── openai_compat/   # OpenAI 兼容层
+│           ├── __init__.py
+│           ├── server.py    # FastAPI 应用
+│           └── kserve_client.py  # KServe gRPC 客户端
 ```
 
 ### CLI 入口 (`cli/main.py`)

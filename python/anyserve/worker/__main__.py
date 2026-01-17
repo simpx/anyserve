@@ -441,12 +441,13 @@ class Worker:
                 error=error_msg
             )
 
-    def dispatch_stream_request(self, request, grpc_context):
+    def dispatch_stream_request(self, proto_request, grpc_context):
         """分发流式请求到对应的流式处理函数"""
         from anyserve._proto import grpc_predict_v2_pb2
+        from anyserve.kserve import _proto_to_python_request
 
-        model_name = request.model_name
-        model_version = request.model_version
+        model_name = proto_request.model_name
+        model_version = proto_request.model_version
 
         # 查找流式 handler
         if not hasattr(self.app, 'find_stream_handler'):
@@ -468,6 +469,9 @@ class Worker:
 
         handler, uses_context, matched_capability = result
 
+        # Convert proto request to Python request
+        py_request = _proto_to_python_request(proto_request.SerializeToString())
+
         # 创建 Stream 对象
         stream = Stream()
 
@@ -477,7 +481,7 @@ class Worker:
         # 在后台线程中运行 handler
         def run_handler():
             try:
-                handler(request, context, stream)
+                handler(py_request, context, stream)
             except Exception as e:
                 import traceback
                 error_msg = f"Error in stream handler: {str(e)}\n{traceback.format_exc()}"

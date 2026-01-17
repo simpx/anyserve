@@ -35,6 +35,10 @@ class LlamaCppConfig:
     host: str = "0.0.0.0"
     port: int = 8000
 
+    # OpenAI server parameters (embedded)
+    openai_port: Optional[int] = None  # None = disabled
+    openai_host: str = "0.0.0.0"
+
     @classmethod
     def from_yaml(cls, path: str) -> "LlamaCppConfig":
         """Load configuration from a YAML file."""
@@ -53,3 +57,5 @@ class LlamaCppConfig:
             raise ValueError("n_ctx must be positive")
         if self.port < 1 or self.port > 65535:
             raise ValueError("port must be between 1 and 65535")
+        if self.openai_port is not None and (self.openai_port < 1 or self.openai_port > 65535):
+            raise ValueError("openai_port must be between 1 and 65535")

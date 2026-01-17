@@ -148,7 +148,7 @@ def test_anyserve_app_find_handler():
 
 def test_openai_server_app_creation():
     """Test OpenAI server app creation."""
-    from openai_server.server import create_app
+    from anyserve.builtins.llamacpp.openai_compat import create_app
 
     app = create_app("localhost:8000")
 
@@ -164,7 +164,7 @@ def test_openai_server_app_creation():
 def test_openai_server_endpoints():
     """Test OpenAI server endpoints with mock client."""
     from fastapi.testclient import TestClient
-    from openai_server.server import create_app
+    from anyserve.builtins.llamacpp.openai_compat import create_app
     from unittest.mock import patch
 
     app = create_app("localhost:8000")
@@ -176,7 +176,7 @@ def test_openai_server_endpoints():
     assert response.json()["status"] == "ok"
 
     # Test models list (will use mock)
-    with patch('openai_server.server.KServeClient') as MockClient:
+    with patch('anyserve.builtins.llamacpp.openai_compat.server.KServeClient') as MockClient:
         mock_instance = MockClient.return_value
         mock_instance.get_model_info.return_value = {"model_name": "test-model"}
 
@@ -199,6 +199,8 @@ def test_cli_serve_help():
     assert '--port' in result.output
     assert '--n-ctx' in result.output
     assert '--workers' in result.output
+    assert '--openai-port' in result.output
+    assert '--openai-host' in result.output
 
 
 def test_cli_run_help():
@@ -216,7 +218,7 @@ def test_cli_run_help():
 
 def test_kserve_client_creation():
     """Test KServe client creation."""
-    from openai_server.kserve_client import KServeClient
+    from anyserve.builtins.llamacpp.openai_compat import KServeClient
 
     client = KServeClient("localhost:8000")
     assert client.endpoint == "localhost:8000"

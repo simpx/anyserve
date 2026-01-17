@@ -318,6 +318,7 @@ class AnyServeServer:
                 "--ingress", f"localhost:{self.management_port}",
                 "--worker-id", worker_id,
                 "--object-store", self.object_store,
+                "--grpc-port", str(self.port + 100),  # Streaming gRPC port
             ]
 
             if self.factory:

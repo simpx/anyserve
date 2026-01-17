@@ -1,6 +1,6 @@
 #!/bin/bash
 # AnyServe LlamaCpp Example - Start Server
-# Starts both AnyServe (gRPC backend) and OpenAI-compatible API server
+# Starts AnyServe with embedded OpenAI-compatible API server
 
 set -e
 
@@ -39,43 +39,13 @@ echo "AnyServe LlamaCpp Server"
 echo "=============================================="
 echo "Model: $MODEL_PATH"
 echo "Model Name: $MODEL_NAME"
-echo "AnyServe gRPC port: $ANYSERVE_PORT"
+echo "KServe gRPC port: $ANYSERVE_PORT"
 echo "OpenAI API port: $OPENAI_PORT"
 echo "=============================================="
 echo ""
 
-# Cleanup function
-cleanup() {
-    echo ""
-    echo "Shutting down servers..."
-    if [ ! -z "$ANYSERVE_PID" ]; then
-        kill $ANYSERVE_PID 2>/dev/null || true
-        wait $ANYSERVE_PID 2>/dev/null || true
-    fi
-    echo "Done."
-}
-
-trap cleanup EXIT INT TERM
-
-# Start AnyServe in background
-echo "Starting AnyServe backend..."
-anyserve serve "$MODEL_PATH" --name "$MODEL_NAME" --port "$ANYSERVE_PORT" &
-ANYSERVE_PID=$!
-
-# Wait for AnyServe to be ready
-echo "Waiting for AnyServe to start..."
-sleep 3
-
-# Check if AnyServe is still running
-if ! kill -0 $ANYSERVE_PID 2>/dev/null; then
-    echo "Error: AnyServe failed to start"
-    exit 1
-fi
-
-echo "AnyServe started (PID: $ANYSERVE_PID)"
-echo ""
-
-# Start OpenAI-compatible server in foreground
-echo "Starting OpenAI-compatible API server..."
-echo ""
-python3 -m openai_server --anyserve-endpoint "localhost:$ANYSERVE_PORT" --port "$OPENAI_PORT"
+# Start AnyServe with embedded OpenAI server
+anyserve serve "$MODEL_PATH" \
+    --name "$MODEL_NAME" \
+    --port "$ANYSERVE_PORT" \
+    --openai-port "$OPENAI_PORT"

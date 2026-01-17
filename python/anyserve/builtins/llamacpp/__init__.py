@@ -29,6 +29,9 @@ def create_app():
         ANYSERVE_LLAMACPP_N_GPU_LAYERS: GPU layers, -1 for all (default: -1)
         ANYSERVE_LLAMACPP_N_BATCH: Batch size (default: 512)
         ANYSERVE_LLAMACPP_N_THREADS: CPU threads (optional)
+        ANYSERVE_LLAMACPP_OPENAI_PORT: OpenAI server port (optional, disabled if not set)
+        ANYSERVE_LLAMACPP_OPENAI_HOST: OpenAI server host (default: "0.0.0.0")
+        ANYSERVE_LLAMACPP_KSERVE_ENDPOINT: KServe endpoint for OpenAI server (e.g., "localhost:8000")
 
     Returns:
         AnyServe app instance with registered capability handlers
@@ -52,6 +55,20 @@ def create_app():
     print(f"[LlamaCpp] Model loaded successfully: {config.name}")
 
     _set_engine(engine, config)
+
+    # Start embedded OpenAI server if configured
+    openai_port = os.environ.get("ANYSERVE_LLAMACPP_OPENAI_PORT")
+    if openai_port:
+        openai_host = os.environ.get("ANYSERVE_LLAMACPP_OPENAI_HOST", "0.0.0.0")
+        kserve_endpoint = os.environ.get("ANYSERVE_LLAMACPP_KSERVE_ENDPOINT", "localhost:8000")
+
+        from .openai_server import start_openai_server
+        start_openai_server(
+            kserve_endpoint=kserve_endpoint,
+            host=openai_host,
+            port=int(openai_port),
+        )
+
     return app
 
 
