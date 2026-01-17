@@ -25,11 +25,20 @@
 
 | 概念 | 说明 |
 |------|------|
-| **Replica** | anyserve 运行实例，1 Replica = 1 Dispatcher + N Workers |
-| **Dispatcher** | C++ 进程，流量入口，管理 Worker |
-| **Worker** | Python 进程，执行推理 |
-| **Capability** | 任意 key-value，用于请求路由 |
+| **anyserve 实例** | 部署单元，运行在一组资源上（单机或多机） |
+| **Agent** | anyserve 主进程（C++），每机一个，负责流量入口、Worker 管理、请求队列、Object System |
+| **Worker** | 执行推理的进程（当前 Python，未来支持 C++），1 Worker 提供 1 组 Capability |
+| **Capability** | anyserve 的核心抽象，任意 key-value 数据，用于请求路由和匹配 |
 | **API Server** | 独立服务，全局路由（MVP 中用 FastAPI 实现） |
+| **Delegation** | 请求转发机制，当实例无法处理请求时转发给其他实例 |
+| **Object System** | 跨实例数据传输系统，支持大对象传递 |
+
+### 架构简图
+
+```
+单机部署：1 anyserve 实例 = 1 Agent + N Workers
+多机部署：1 anyserve 实例 = M Agents (每机 1 个，leader-follower) + N Workers
+```
 
 ## 开发命令
 
