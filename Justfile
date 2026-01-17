@@ -67,10 +67,19 @@ clean:
     find . -type d -name '.pytest_cache' -exec rm -rf {} + 2>/dev/null || true
 
 # Build wheel for distribution
-wheel:
+wheel python="":
     #!/usr/bin/env bash
     set -e
     echo "=== Building AnyServe wheel ==="
+    # Detect Python version from current venv or use specified
+    if [ -n "{{python}}" ]; then
+        PY_VERSION="{{python}}"
+    elif [ -f ".venv/bin/python" ]; then
+        PY_VERSION=$(.venv/bin/python --version | cut -d' ' -f2 | cut -d'.' -f1,2)
+    else
+        PY_VERSION="3.13"
+    fi
+    echo "Using Python $PY_VERSION"
     # Generate protobuf files
     mkdir -p python/anyserve/_proto python/anyserve/worker/proto
     uv run python -m grpc_tools.protoc -I proto \
@@ -90,8 +99,8 @@ wheel:
         echo "Installing Conan dependencies..."
         pushd cpp && conan install . --output-folder=build --build=missing -s build_type=Release && popd
     fi
-    # Build wheel
-    CMAKE_TOOLCHAIN_FILE=$(pwd)/cpp/build/conan_toolchain.cmake uv build --wheel
+    # Build wheel with matching Python version
+    CMAKE_TOOLCHAIN_FILE=$(pwd)/cpp/build/conan_toolchain.cmake uv build --wheel --python $PY_VERSION
     echo "=== Done! ==="
     ls -la dist/
 
