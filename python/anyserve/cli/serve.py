@@ -7,6 +7,7 @@ Usage:
     anyserve serve --config /etc/anyserve/model.yaml
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -69,24 +70,21 @@ def serve_command(model_path, name, n_ctx, n_gpu_layers, n_batch, n_threads, por
     click.echo(f"  Workers: {workers}")
     click.echo()
 
-    # Import and initialize the app with model
-    from anyserve.builtins.llamacpp import create_app
+    # 设置环境变量（供 factory 读取）
+    os.environ["ANYSERVE_LLAMACPP_MODEL_PATH"] = str(model_path)
+    os.environ["ANYSERVE_LLAMACPP_NAME"] = model_name
+    os.environ["ANYSERVE_LLAMACPP_N_CTX"] = str(n_ctx)
+    os.environ["ANYSERVE_LLAMACPP_N_GPU_LAYERS"] = str(n_gpu_layers)
+    os.environ["ANYSERVE_LLAMACPP_N_BATCH"] = str(n_batch)
+    if n_threads:
+        os.environ["ANYSERVE_LLAMACPP_N_THREADS"] = str(n_threads)
 
-    # Create the app with model loaded - this also registers capabilities
-    create_app(
-        model_path=model_path,
-        name=model_name,
-        n_ctx=n_ctx,
-        n_gpu_layers=n_gpu_layers,
-        n_batch=n_batch,
-        n_threads=n_threads,
-    )
-
-    # Use the standard AnyServe server
+    # Use the standard AnyServe server with factory mode
     from .run import AnyServeServer
 
     server = AnyServeServer(
-        app="anyserve.builtins.llamacpp.app:app",
+        app="anyserve.builtins.llamacpp:create_app",
+        factory=True,  # 使用 factory 模式
         host=host,
         port=port,
         workers=workers,

@@ -38,13 +38,21 @@ def main():
     parser.add_argument('--object-store', default='/tmp/anyserve-objects', help='Object store path')
     parser.add_argument('--replica-id', default=None, help='Replica ID for registration')
     parser.add_argument('--grpc-port', type=int, default=None, help='gRPC port for streaming (default: ingress_port + 100)')
+    parser.add_argument('--factory', action='store_true', help='Treat app as factory function')
 
     args = parser.parse_args()
 
     # 1. 加载应用
     module_path, app_name = args.app.split(":")
     module = importlib.import_module(module_path)
-    app = getattr(module, app_name)
+
+    if args.factory:
+        # Factory 模式：调用函数获取 app
+        factory_func = getattr(module, app_name)
+        app = factory_func()
+    else:
+        # 普通模式：直接获取 app 对象
+        app = getattr(module, app_name)
 
     # Determine gRPC port for streaming
     ingress_port = int(args.ingress.split(":")[1])

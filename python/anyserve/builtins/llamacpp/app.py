@@ -22,6 +22,13 @@ _engine: LlamaCppEngine = None
 _config: LlamaCppConfig = None
 
 
+def _set_engine(engine: LlamaCppEngine, config: LlamaCppConfig):
+    """设置全局 engine（由 factory 调用）"""
+    global _engine, _config
+    _engine = engine
+    _config = config
+
+
 def create_app(
     model_path: str,
     name: str = None,

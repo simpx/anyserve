@@ -71,6 +71,7 @@ class KServeClient:
         # Create request for model_info capability
         request = grpc_predict_v2_pb2.ModelInferRequest()
         request.model_name = "model_info"
+        request.model_version = "llamacpp"
 
         try:
             response = self._stub.ModelInfer(request, timeout=10.0)
@@ -111,6 +112,7 @@ class KServeClient:
         # Build KServe request
         request = grpc_predict_v2_pb2.ModelInferRequest()
         request.model_name = "generate"
+        request.model_version = "llamacpp"
 
         # Add prompt input
         prompt_input = request.inputs.add()
@@ -188,6 +190,7 @@ class KServeClient:
         # Build KServe request
         request = grpc_predict_v2_pb2.ModelInferRequest()
         request.model_name = "generate_stream"
+        request.model_version = "llamacpp"
 
         # Add prompt input
         prompt_input = request.inputs.add()

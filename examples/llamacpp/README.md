@@ -50,14 +50,36 @@ wget https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/
 
 ## Quick Start
 
-### 1. Start AnyServe with the model (KServe gRPC)
+### Using the Scripts (Recommended)
+
+The easiest way to run the example is using the provided scripts:
 
 ```bash
-anyserve serve tinyllama-1.1b-chat-v1.0.Q2_K.gguf --name tinyllama --port 8000
+# Terminal 1: Start both AnyServe and OpenAI server
+export ANYSERVE_MODEL_PATH=/path/to/your/model.gguf
+./examples/llamacpp/run_server.sh
+
+# Terminal 2: Run the client
+./examples/llamacpp/run_client.sh --prompt "Hello, tell me a joke" --stream
+./examples/llamacpp/run_client.sh --list-models
+```
+
+Environment variables for `run_server.sh`:
+- `ANYSERVE_MODEL_PATH` - Path to your GGUF model file (required)
+- `ANYSERVE_MODEL_NAME` - Model name for API (default: qwen3-0.6b)
+- `ANYSERVE_PORT` - AnyServe gRPC port (default: 8000)
+- `OPENAI_PORT` - OpenAI API port (default: 8080)
+
+### Manual Setup
+
+#### 1. Start AnyServe with the model (KServe gRPC)
+
+```bash
+anyserve serve /path/to/model.gguf --name my-model --port 8000
 
 # Or with more options
-anyserve serve tinyllama-1.1b-chat-v1.0.Q2_K.gguf \
-    --name tinyllama \
+anyserve serve /path/to/model.gguf \
+    --name my-model \
     --n-ctx 2048 \
     --n-gpu-layers -1 \
     --port 8000 \
@@ -66,7 +88,7 @@ anyserve serve tinyllama-1.1b-chat-v1.0.Q2_K.gguf \
 
 This exposes the model via gRPC on port 8000 using the KServe v2 inference protocol.
 
-### 2. (Optional) Start OpenAI-compatible API server
+#### 2. (Optional) Start OpenAI-compatible API server
 
 ```bash
 python -m openai_server --anyserve-endpoint localhost:8000 --port 8080
@@ -191,29 +213,18 @@ response = openai.Completion.create(
 print(response.choices[0].text)
 ```
 
-## Direct AnyServe Worker Usage
+## Direct AnyServe Worker Usage (Factory Mode)
 
-For advanced use cases, you can also use the llamacpp app directly:
+For advanced use cases, you can use the factory mode with environment variables:
 
 ```bash
-# Run with anyserve run command
-anyserve run anyserve.builtins.llamacpp.app:app --port 8000
+# Set environment variables
+export ANYSERVE_LLAMACPP_MODEL_PATH=/path/to/model.gguf
+export ANYSERVE_LLAMACPP_NAME=my-model
+export ANYSERVE_LLAMACPP_N_CTX=2048
 
-# Note: You need to initialize the model first in your code
+# Run with factory mode
+anyserve run anyserve.builtins.llamacpp:create_app --factory --port 8000
 ```
 
-Or in Python:
-
-```python
-from anyserve.builtins.llamacpp import create_app
-
-# Create and configure the app
-app = create_app(
-    model_path="/path/to/model.gguf",
-    name="my-model",
-    n_ctx=2048,
-)
-
-# Run the server
-app.run(port=8000)
-```
+This is equivalent to `anyserve serve` but gives you more control over the environment.

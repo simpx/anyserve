@@ -30,7 +30,8 @@ import requests
 @click.option("--api-server", default=None, help="API Server URL for capability registration")
 @click.option("--object-store", default="/tmp/anyserve-objects", help="Object store path")
 @click.option("--replica-id", default=None, help="Replica ID for API Server registration")
-def run_command(app, host, port, workers, reload, ingress_bin, api_server, object_store, replica_id):
+@click.option("--factory", is_flag=True, help="Treat app as factory function")
+def run_command(app, host, port, workers, reload, ingress_bin, api_server, object_store, replica_id, factory):
     """Run an AnyServe application.
 
     Example:
@@ -54,6 +55,7 @@ def run_command(app, host, port, workers, reload, ingress_bin, api_server, objec
         api_server=api_server,
         object_store=object_store,
         replica_id=replica_id,
+        factory=factory,
     )
 
     try:
@@ -83,6 +85,7 @@ class AnyServeServer:
         api_server: Optional[str] = None,
         object_store: str = "/tmp/anyserve-objects",
         replica_id: Optional[str] = None,
+        factory: bool = False,
     ):
         self.app = app
         self.host = host
@@ -93,6 +96,7 @@ class AnyServeServer:
         self.api_server = api_server
         self.object_store = object_store
         self.replica_id = replica_id
+        self.factory = factory
 
         self.management_port = port + 1000
 
@@ -155,7 +159,20 @@ class AnyServeServer:
         try:
             module_path, app_name = self.app.rsplit(":", 1)
             module = importlib.import_module(module_path)
-            app_obj = getattr(module, app_name, None)
+
+            if self.factory:
+                # Factory mode: call function to get app (for capability discovery only)
+                # Note: In main process, we just try to get capabilities if possible
+                # The actual app creation happens in worker processes
+                factory_func = getattr(module, app_name, None)
+                if factory_func is None:
+                    print(f"[AnyServe] Warning: Could not find factory '{app_name}' in '{module_path}'")
+                    return
+                # Skip calling factory in main process - capabilities will be discovered by workers
+                print(f"[AnyServe] Factory mode: capabilities will be loaded by workers")
+                return
+            else:
+                app_obj = getattr(module, app_name, None)
 
             if app_obj is None:
                 print(f"[AnyServe] Warning: Could not find '{app_name}' in '{module_path}'")
@@ -302,6 +319,9 @@ class AnyServeServer:
                 "--worker-id", worker_id,
                 "--object-store", self.object_store,
             ]
+
+            if self.factory:
+                cmd.append("--factory")
 
             if self.replica_id:
                 cmd.extend(["--replica-id", self.replica_id])
