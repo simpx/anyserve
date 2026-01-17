@@ -1,5 +1,5 @@
 """
-AnyServe serve command - Serve a llama.cpp model.
+AnyServe serve command - Serve a llama.cpp model using AnyServe worker.
 
 Usage:
     anyserve serve /models/llama-7b-chat.gguf
@@ -7,6 +7,7 @@ Usage:
     anyserve serve --config /etc/anyserve/model.yaml
 """
 
+import sys
 from pathlib import Path
 
 import click
@@ -21,45 +22,84 @@ import click
 @click.option("--n-threads", type=int, default=None, help="CPU threads")
 @click.option("--port", type=int, default=8000, help="Server port")
 @click.option("--host", type=str, default="0.0.0.0", help="Server host")
+@click.option("--workers", type=int, default=1, help="Number of workers")
 @click.option("--config", type=click.Path(exists=True), help="Config file path")
-def serve_command(model_path, name, n_ctx, n_gpu_layers, n_batch, n_threads, port, host, config):
+def serve_command(model_path, name, n_ctx, n_gpu_layers, n_batch, n_threads, port, host, workers, config):
     """Start anyserve with a llama.cpp model.
+
+    This command runs a llama.cpp model using the AnyServe worker framework,
+    exposing it via the KServe gRPC protocol.
 
     Example:
         anyserve serve /models/llama-7b.gguf --name llama-7b --port 8000
+
+    To access via OpenAI-compatible API, also run the openai_server:
+        python -m openai_server --anyserve-endpoint localhost:8000 --port 8080
     """
-    from anyserve.builtins.llamacpp import LlamaCppConfig, create_server
+    from anyserve.builtins.llamacpp import LlamaCppConfig
 
     # Load configuration
     if config:
         cfg = LlamaCppConfig.from_yaml(config)
+        model_path = cfg.model_path
+        name = name or cfg.name
+        n_ctx = cfg.n_ctx
+        n_gpu_layers = cfg.n_gpu_layers
+        n_batch = cfg.n_batch
+        n_threads = cfg.n_threads
+        port = cfg.port
+        host = cfg.host
     else:
         if not model_path:
             raise click.UsageError("Either model_path or --config is required")
 
-        # Infer model name from file name
-        model_name = name or Path(model_path).stem
-
-        cfg = LlamaCppConfig(
-            model_path=model_path,
-            name=model_name,
-            n_ctx=n_ctx,
-            n_gpu_layers=n_gpu_layers,
-            n_batch=n_batch,
-            n_threads=n_threads,
-            port=port,
-            host=host,
-        )
-
+    # Validate model path
+    cfg = LlamaCppConfig(model_path=model_path)
     cfg.validate()
 
-    click.echo(f"Starting anyserve with model: {cfg.model_path}")
-    click.echo(f"  Model name: {cfg.name}")
-    click.echo(f"  Context size: {cfg.n_ctx}")
-    click.echo(f"  GPU layers: {cfg.n_gpu_layers}")
-    click.echo(f"  Host: {cfg.host}")
-    click.echo(f"  Port: {cfg.port}")
+    # Infer model name from file name
+    model_name = name or Path(model_path).stem
 
-    # Create and start the server
-    server = create_server(cfg)
-    server.run()
+    click.echo(f"Starting AnyServe with llama.cpp model:")
+    click.echo(f"  Model path: {model_path}")
+    click.echo(f"  Model name: {model_name}")
+    click.echo(f"  Context size: {n_ctx}")
+    click.echo(f"  GPU layers: {n_gpu_layers}")
+    click.echo(f"  Host: {host}:{port}")
+    click.echo(f"  Workers: {workers}")
+    click.echo()
+
+    # Import and initialize the app with model
+    from anyserve.builtins.llamacpp import create_app
+
+    # Create the app with model loaded - this also registers capabilities
+    create_app(
+        model_path=model_path,
+        name=model_name,
+        n_ctx=n_ctx,
+        n_gpu_layers=n_gpu_layers,
+        n_batch=n_batch,
+        n_threads=n_threads,
+    )
+
+    # Use the standard AnyServe server
+    from .run import AnyServeServer
+
+    server = AnyServeServer(
+        app="anyserve.builtins.llamacpp.app:app",
+        host=host,
+        port=port,
+        workers=workers,
+    )
+
+    try:
+        server.start()
+    except KeyboardInterrupt:
+        click.echo("\n[AnyServe] Received Ctrl+C, shutting down...")
+    except Exception as e:
+        click.echo(f"[AnyServe] Error: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+    finally:
+        server.stop()

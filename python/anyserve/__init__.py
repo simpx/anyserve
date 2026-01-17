@@ -5,7 +5,7 @@ try:
         infer,
         ModelInferRequest, ModelInferResponse,
         InferInputTensor, InferOutputTensor, InferTensorContents,
-        Capability, Context,
+        Capability, Context, Stream,
     )
 except ImportError:
     from .kserve import (
@@ -13,7 +13,7 @@ except ImportError:
         infer,
         ModelInferRequest, ModelInferResponse,
         InferInputTensor, InferOutputTensor, InferTensorContents,
-        Capability, Context,
+        Capability, Context, Stream,
     )
 
 __all__ = [
@@ -21,5 +21,5 @@ __all__ = [
     "infer",
     "ModelInferRequest", "ModelInferResponse",
     "InferInputTensor", "InferOutputTensor", "InferTensorContents",
-    "Capability", "Context",
+    "Capability", "Context", "Stream",
 ]

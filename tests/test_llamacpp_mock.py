@@ -1,7 +1,7 @@
 """
 Mock tests for llama.cpp serve functionality.
 
-These tests use a mock engine to test the HTTP server and CLI flow
+These tests use a mock engine to test the AnyServe worker and CLI flow
 without requiring a real GGUF model.
 """
 
@@ -111,19 +111,46 @@ def test_engine_stream():
     assert "".join(tokens) == "Hello world!"
 
 
-def test_handlers_app_creation():
-    """Test FastAPI app creation."""
-    from anyserve.builtins.llamacpp import LlamaCppConfig
-    from anyserve.builtins.llamacpp.handlers import create_app
+def test_anyserve_app_creation():
+    """Test AnyServe app with llamacpp capabilities."""
+    from anyserve.builtins.llamacpp.app import app
 
-    cfg = LlamaCppConfig(model_path="/tmp/test.gguf", name="test-model")
+    # Check that app is created
+    assert app is not None
 
-    # Create mock engine
-    mock_engine = Mock()
-    mock_engine._model = True
-    mock_engine.generate.return_value = "Generated text"
+    # Check that capabilities are registered
+    capabilities = app.get_capabilities()
+    assert len(capabilities) >= 2  # generate and generate_stream
 
-    app = create_app(cfg, mock_engine)
+    # Check capability types
+    cap_types = [cap.get("type") for cap in capabilities]
+    assert "generate" in cap_types
+    assert "generate_stream" in cap_types
+
+
+def test_anyserve_app_find_handler():
+    """Test finding handlers by capability."""
+    from anyserve.builtins.llamacpp.app import app
+
+    # Find generate handler
+    result = app.find_handler({"type": "generate"})
+    assert result is not None
+    handler, uses_context, capability = result
+    assert callable(handler)
+    assert uses_context is True
+
+    # Find stream handler
+    result = app.find_stream_handler({"type": "generate_stream"})
+    assert result is not None
+    handler, uses_context, capability = result
+    assert callable(handler)
+
+
+def test_openai_server_app_creation():
+    """Test OpenAI server app creation."""
+    from openai_server.server import create_app
+
+    app = create_app("localhost:8000")
 
     # Test that app was created with correct routes
     routes = [r.path for r in app.routes]
@@ -131,47 +158,31 @@ def test_handlers_app_creation():
     assert "/health" in routes
     assert "/v1/models" in routes
     assert "/v1/completions" in routes
-    assert "/generate" in routes
+    assert "/v1/chat/completions" in routes
 
 
-def test_handlers_completion_endpoint():
-    """Test completion endpoint with mock engine."""
+def test_openai_server_endpoints():
+    """Test OpenAI server endpoints with mock client."""
     from fastapi.testclient import TestClient
-    from anyserve.builtins.llamacpp import LlamaCppConfig
-    from anyserve.builtins.llamacpp.handlers import create_app
+    from openai_server.server import create_app
+    from unittest.mock import patch
 
-    cfg = LlamaCppConfig(model_path="/tmp/test.gguf", name="test-model")
-
-    # Create mock engine
-    mock_engine = Mock()
-    mock_engine._model = True
-    mock_engine.generate.return_value = "This is a test response."
-
-    app = create_app(cfg, mock_engine)
+    app = create_app("localhost:8000")
     client = TestClient(app)
 
-    # Test health endpoint
-    response = client.get("/health")
+    # Test root endpoint
+    response = client.get("/")
     assert response.status_code == 200
-    assert response.json()["status"] == "healthy"
+    assert response.json()["status"] == "ok"
 
-    # Test models list
-    response = client.get("/v1/models")
-    assert response.status_code == 200
-    assert len(response.json()["data"]) == 1
-    assert response.json()["data"][0]["id"] == "test-model"
+    # Test models list (will use mock)
+    with patch('openai_server.server.KServeClient') as MockClient:
+        mock_instance = MockClient.return_value
+        mock_instance.get_model_info.return_value = {"model_name": "test-model"}
 
-    # Test completion (non-streaming)
-    response = client.post("/v1/completions", json={
-        "prompt": "Once upon a time",
-        "max_tokens": 50
-    })
-    assert response.status_code == 200
-    assert "choices" in response.json()
-    assert response.json()["model"] == "test-model"
-
-    # Verify engine was called
-    mock_engine.generate.assert_called()
+        response = client.get("/v1/models")
+        assert response.status_code == 200
+        assert "data" in response.json()
 
 
 def test_cli_serve_help():
@@ -187,6 +198,7 @@ def test_cli_serve_help():
     assert '--name' in result.output
     assert '--port' in result.output
     assert '--n-ctx' in result.output
+    assert '--workers' in result.output
 
 
 def test_cli_run_help():
@@ -200,6 +212,15 @@ def test_cli_run_help():
     assert result.exit_code == 0
     assert '--port' in result.output
     assert '--workers' in result.output
+
+
+def test_kserve_client_creation():
+    """Test KServe client creation."""
+    from openai_server.kserve_client import KServeClient
+
+    client = KServeClient("localhost:8000")
+    assert client.endpoint == "localhost:8000"
+    assert client._channel is None  # Not connected yet
 
 
 if __name__ == "__main__":
