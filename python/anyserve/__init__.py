@@ -1,3 +1,5 @@
+__version__ = "0.1.0"
+
 # KServe v2 API
 try:
     from anyserve.kserve import (

@@ -26,12 +26,12 @@ import requests
 @click.option("--port", type=int, default=8000, help="Bind port (default: 8000)")
 @click.option("--workers", type=int, default=1, help="Number of workers (default: 1)")
 @click.option("--reload", is_flag=True, help="Auto-reload on code changes (not implemented)")
-@click.option("--ingress-bin", default=None, help="Path to anyserve_dispatcher binary")
+@click.option("--agent-bin", default=None, help="Path to anyserve_agent binary")
 @click.option("--api-server", default=None, help="API Server URL for capability registration")
 @click.option("--object-store", default="/tmp/anyserve-objects", help="Object store path")
 @click.option("--replica-id", default=None, help="Replica ID for API Server registration")
 @click.option("--factory", is_flag=True, help="Treat app as factory function")
-def run_command(app, host, port, workers, reload, ingress_bin, api_server, object_store, replica_id, factory):
+def run_command(app, host, port, workers, reload, agent_bin, api_server, object_store, replica_id, factory):
     """Run an AnyServe application.
 
     Example:
@@ -51,7 +51,7 @@ def run_command(app, host, port, workers, reload, ingress_bin, api_server, objec
         port=port,
         workers=workers,
         reload=reload,
-        ingress_bin=ingress_bin,
+        agent_bin=agent_bin,
         api_server=api_server,
         object_store=object_store,
         replica_id=replica_id,
@@ -81,7 +81,7 @@ class AnyServeServer:
         port: int = 8000,
         workers: int = 1,
         reload: bool = False,
-        ingress_bin: Optional[str] = None,
+        agent_bin: Optional[str] = None,
         api_server: Optional[str] = None,
         object_store: str = "/tmp/anyserve-objects",
         replica_id: Optional[str] = None,
@@ -92,7 +92,7 @@ class AnyServeServer:
         self.port = port
         self.workers = workers
         self.reload = reload
-        self.ingress_bin = ingress_bin or self._find_ingress_binary()
+        self.agent_bin = agent_bin or self._find_agent()
         self.api_server = api_server
         self.object_store = object_store
         self.replica_id = replica_id
@@ -113,28 +113,38 @@ class AnyServeServer:
     def _signal_handler(self, signum, frame):
         self.running = False
 
-    def _find_ingress_binary(self) -> str:
-        """Find anyserve_dispatcher executable."""
+    def _find_agent(self) -> str:
+        """Find anyserve_agent executable."""
+        import shutil
+
+        # 1. Check package's scripts directory (wheel installation)
+        if hasattr(sys, 'prefix'):
+            pkg_bin = Path(sys.prefix) / "bin" / "anyserve_agent"
+            if pkg_bin.is_file() and os.access(str(pkg_bin), os.X_OK):
+                return str(pkg_bin)
+
+        # 2. Check PATH
+        agent = shutil.which("anyserve_agent")
+        if agent:
+            return agent
+
+        # 3. Development paths
         candidates = [
-            "./cpp/build/anyserve_dispatcher",
-            "./build/anyserve_dispatcher",
-            str(Path(__file__).parent.parent.parent.parent / "cpp" / "build" / "anyserve_dispatcher"),
-            "anyserve_dispatcher",
+            "./cpp/build/anyserve_agent",
+            "./build/anyserve_agent",
+            str(Path(__file__).parent.parent.parent.parent / "cpp" / "build" / "anyserve_agent"),
         ]
 
         for path in candidates:
-            if path == "anyserve_dispatcher":
-                import shutil
-                if shutil.which(path):
-                    return path
-            elif os.path.exists(path) and os.access(path, os.X_OK):
+            if os.path.exists(path) and os.access(path, os.X_OK):
                 return os.path.abspath(path)
 
         raise FileNotFoundError(
-            "anyserve_dispatcher binary not found. Please:\n"
-            "  1. Compile C++ code: cd cpp && mkdir -p build && cd build && "
+            "anyserve_agent binary not found. Please:\n"
+            "  1. Install anyserve: pip install anyserve\n"
+            "  2. Or compile C++ code: cd cpp && mkdir -p build && cd build && "
             "conan install .. --build=missing && cmake .. && cmake --build .\n"
-            "  2. Or specify the path with --ingress-bin"
+            "  3. Or specify the path with --agent-bin"
         )
 
     def _wait_for_port(self, host: str, port: int, timeout: int = 10) -> bool:
@@ -278,11 +288,11 @@ class AnyServeServer:
         self._monitor_processes()
 
     def _start_ingress(self):
-        """Start C++ Ingress process."""
-        print(f"[AnyServe] Starting C++ Ingress: {self.ingress_bin}")
+        """Start C++ Agent process."""
+        print(f"[AnyServe] Starting C++ Agent: {self.agent_bin}")
 
         cmd = [
-            self.ingress_bin,
+            self.agent_bin,
             "--port", str(self.port),
             "--management-port", str(self.management_port),
         ]

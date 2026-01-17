@@ -136,18 +136,20 @@ target_link_libraries(anyserve_node PRIVATE
     anyserve_core_lib
 )
 
-# Dispatcher node (new architecture)
+# Agent node (new architecture)
 if(BUILD_INGRESS)
-    add_executable(anyserve_dispatcher
+    add_executable(anyserve_agent
         server/main_v2.cpp
     )
 
-    target_link_libraries(anyserve_dispatcher PRIVATE
+    target_link_libraries(anyserve_agent PRIVATE
         anyserve_dispatcher_lib
     )
 
-    # Install
-    install(TARGETS anyserve_dispatcher RUNTIME DESTINATION bin)
+    # Install to wheel's scripts directory for scikit-build-core
+    install(TARGETS anyserve_agent
+        RUNTIME DESTINATION ${SKBUILD_SCRIPTS_DIR}
+    )
 endif()
 
 # ============================================================================

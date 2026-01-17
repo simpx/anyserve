@@ -1,10 +1,14 @@
 default:
     @just --list
 
-setup:
+setup python="":
     #!/usr/bin/env bash
     set -e
-    uv venv
+    if [ -n "{{python}}" ]; then
+        uv venv --python {{python}}
+    else
+        uv venv
+    fi
     pushd cpp && conan install . --output-folder=build --build=missing -s build_type=Release && popd
 
 build:
@@ -26,7 +30,7 @@ build:
     sed -i '' 's/^import grpc_predict_v2_pb2/from . import grpc_predict_v2_pb2/' python/anyserve/worker/proto/grpc_predict_v2_pb2_grpc.py
     sed -i '' 's/^import worker_management_pb2/from . import worker_management_pb2/' python/anyserve/worker/proto/worker_management_pb2_grpc.py
     touch python/anyserve/worker/proto/__init__.py
-    # Build C++ Dispatcher
+    # Build C++ Agent
     cd cpp/build
     rm -f CMakeCache.txt
     cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=conan_toolchain.cmake
@@ -57,6 +61,61 @@ clean:
     rm -rf python/anyserve/_proto
     rm -rf python/anyserve/worker/proto
     rm -rf .pytest_cache
+    rm -rf dist
     uv pip uninstall anyserve 2>/dev/null || true
     find . -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true
     find . -type d -name '.pytest_cache' -exec rm -rf {} + 2>/dev/null || true
+
+# Build wheel for distribution
+wheel:
+    #!/usr/bin/env bash
+    set -e
+    echo "=== Building AnyServe wheel ==="
+    # Generate protobuf files
+    mkdir -p python/anyserve/_proto python/anyserve/worker/proto
+    uv run python -m grpc_tools.protoc -I proto \
+        --python_out=python/anyserve/_proto \
+        --grpc_python_out=python/anyserve/_proto \
+        proto/grpc_predict_v2.proto proto/worker_management.proto
+    touch python/anyserve/_proto/__init__.py
+    uv run python -m grpc_tools.protoc -I proto \
+        --python_out=python/anyserve/worker/proto \
+        --grpc_python_out=python/anyserve/worker/proto \
+        proto/grpc_predict_v2.proto proto/worker_management.proto
+    sed -i '' 's/^import grpc_predict_v2_pb2/from . import grpc_predict_v2_pb2/' python/anyserve/worker/proto/grpc_predict_v2_pb2_grpc.py
+    sed -i '' 's/^import worker_management_pb2/from . import worker_management_pb2/' python/anyserve/worker/proto/worker_management_pb2_grpc.py
+    touch python/anyserve/worker/proto/__init__.py
+    # Ensure conan deps exist
+    if [ ! -f "cpp/build/conan_toolchain.cmake" ]; then
+        echo "Installing Conan dependencies..."
+        pushd cpp && conan install . --output-folder=build --build=missing -s build_type=Release && popd
+    fi
+    # Build wheel
+    CMAKE_TOOLCHAIN_FILE=$(pwd)/cpp/build/conan_toolchain.cmake uv build --wheel
+    echo "=== Done! ==="
+    ls -la dist/
+
+# Upload to PyPI
+upload target="test":
+    #!/usr/bin/env bash
+    set -e
+    if [ ! -d "dist" ] || [ -z "$(ls -A dist/*.whl 2>/dev/null)" ]; then
+        echo "Error: No wheel found. Run 'just wheel' first."
+        exit 1
+    fi
+    uv pip install twine
+    case "{{target}}" in
+        test)
+            echo "Uploading to TestPyPI..."
+            twine upload --repository testpypi dist/*
+            echo "Install: pip install -i https://test.pypi.org/simple/ anyserve"
+            ;;
+        prod)
+            echo "Uploading to PyPI..."
+            twine upload dist/*
+            ;;
+        *)
+            echo "Usage: just upload [test|prod]"
+            exit 1
+            ;;
+    esac

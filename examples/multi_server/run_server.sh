@@ -61,8 +61,8 @@ export PYTHONPATH="$PROJECT_ROOT/python:$PROJECT_ROOT:$PYTHONPATH"
 echo -e "${YELLOW}Cleaning up stale processes...${NC}"
 pkill -f "anyserve.cli.*--port 50051" 2>/dev/null || true
 pkill -f "anyserve.cli.*--port 50052" 2>/dev/null || true
-pkill -f "anyserve_dispatcher.*--port 50051" 2>/dev/null || true
-pkill -f "anyserve_dispatcher.*--port 50052" 2>/dev/null || true
+pkill -f "anyserve_agent.*--port 50051" 2>/dev/null || true
+pkill -f "anyserve_agent.*--port 50052" 2>/dev/null || true
 # Also kill any processes holding these ports
 lsof -ti :50051 | xargs kill -9 2>/dev/null || true
 lsof -ti :50052 | xargs kill -9 2>/dev/null || true
